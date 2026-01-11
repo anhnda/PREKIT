@@ -45,8 +45,10 @@ from sklearn.metrics import (
     precision_recall_curve,
     auc,
 )
-
-sys.path.append("/Users/anhnd/CodingSpace/Python/PREDKIT")
+if sys.platform == "darwin":
+    sys.path.append("/Users/anhnd/CodingSpace/Python/PREDKIT")
+else:
+    sys.path.append("/home/anhnda/PREKIT")
 from constants import NULLABLE_MEASURES
 from utils.class_patient import Patients
 from utils.prepare_data import trainTestPatients
