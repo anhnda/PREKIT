@@ -401,7 +401,7 @@ def main():
         test_loader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=hybrid_collate_fn)
         
         # 2. Stage 1: RNN Training
-        rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=48).to(DEVICE)
+        rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=16).to(DEVICE)
         opt = torch.optim.Adam(rnn.parameters(), lr=0.0005)
         rnn = train_rnn_extractor(rnn, train_loader, val_loader, nn.BCELoss(), opt, epochs=100)
         
