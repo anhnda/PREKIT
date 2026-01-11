@@ -426,7 +426,7 @@ def main():
         y_judge_train = np.concatenate([y_tr, y_tr])
         
         # print(f"    Judge Training Size: {X_judge_train.shape} (Augmented)")
-        env_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=2)
+        env_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
         env_tabpfn.fit(X_judge_train, y_judge_train)
 
         # --------------------------------------------------------
