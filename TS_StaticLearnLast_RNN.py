@@ -486,10 +486,10 @@ def main():
         
     print_stat("AUC", metrics_hybrid['auc'], metrics_base['auc'])
     print_stat("AUC-PR", metrics_hybrid['auc_pr'], metrics_base['auc_pr'])
-    print_stat("Accuracy", metrics_hybrid['acc'], metrics_base['acc'])
-    print_stat("Specificity", metrics_hybrid['spec'], metrics_base['spec'])
-    print_stat("Precision", metrics_hybrid['prec'], metrics_base['prec'])
-    print_stat("Recall", metrics_hybrid['rec'], metrics_base['rec'])
+    # print_stat("Accuracy", metrics_hybrid['acc'], metrics_base['acc'])
+    # print_stat("Specificity", metrics_hybrid['spec'], metrics_base['spec'])
+    # print_stat("Precision", metrics_hybrid['prec'], metrics_base['prec'])
+    # print_stat("Recall", metrics_hybrid['rec'], metrics_base['rec'])
 
 if __name__ == "__main__":
     main()
