@@ -125,8 +125,7 @@ class DifferentiableTabPFNWrapper(nn.Module):
 
         # Initialize and fit TabPFN (this is the "frozen" part)
         self.tabpfn = TabPFNClassifier(
-            device='cuda' if torch.cuda.is_available() else 'cpu',
-            N_ensemble_configurations=4  # Smaller ensemble for faster training
+            device='cuda' if torch.cuda.is_available() else 'cpu'
         )
 
         # Convert to numpy for TabPFN fitting
