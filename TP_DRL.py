@@ -247,75 +247,6 @@ class GaussianRNNPolicy(nn.Module):
         mu, _ = self.forward(batch_data)
         return mu
 
-# ==============================================================================
-# 3. RL Training (REINFORCE)
-# ==============================================================================
-
-def train_rnn_rl(rnn_policy, train_loader, tabpfn, epochs=20, alpha_baseline=0.1):
-    # Lower Learning Rate to prevent overshooting good features
-    optimizer = torch.optim.Adam(rnn_policy.parameters(), lr=0.0001)
-    
-    baseline = 0.5 
-    print("\nStarting RL Training Loop...")
-    
-    for epoch in range(epochs):
-        rnn_policy.train()
-        epoch_rewards = []
-        epoch_loss = 0
-        
-        for batch_idx, (t_data, labels, s_data) in enumerate(train_loader):
-            optimizer.zero_grad()
-            
-            # A. Agent Action
-            mu, sigma = rnn_policy(t_data)
-            dist_normal = dist.Normal(mu, sigma)
-            z_action = dist_normal.sample()
-            log_prob = dist_normal.log_prob(z_action).sum(dim=1)
-            
-            # B. Environment Reward (TabPFN)
-            with torch.no_grad():
-                last_vals = extract_last_values(t_data).cpu().numpy()
-                static_vals = s_data.numpy()
-                z_vals = z_action.cpu().numpy()
-                
-                # Combine: [Last + Static + Z]
-                X_batch = np.hstack([last_vals, static_vals, z_vals])
-                y_true = labels.numpy().astype(int)
-                
-                probs = tabpfn.predict_proba(X_batch)
-                
-                # Reward = Confidence in TRUE class
-                rewards = []
-                for i in range(len(y_true)):
-                    r = probs[i, y_true[i]]
-                    rewards.append(r)
-                
-                rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
-            
-            # C. Update
-            batch_avg_reward = rewards.mean().item()
-            epoch_rewards.append(batch_avg_reward)
-            
-            baseline = (1 - alpha_baseline) * baseline + alpha_baseline * batch_avg_reward
-            advantage = rewards - baseline
-            
-            loss = -(log_prob * advantage).mean()
-            
-            # Entropy Regularization (Small)
-            entropy = dist_normal.entropy().mean()
-            loss = loss - 0.005 * entropy
-            
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(rnn_policy.parameters(), max_norm=1.0)
-            optimizer.step()
-            
-            epoch_loss += loss.item()
-
-        avg_r = np.mean(epoch_rewards)
-        if (epoch+1) % 5 == 0:
-            print(f"  Epoch {epoch+1}/{epochs} | Loss: {epoch_loss/len(train_loader):.4f} | Avg Reward: {avg_r:.4f} | Base: {baseline:.4f}")
-
-    return rnn_policy
 
 # ==============================================================================
 # 4. Feature Getter
@@ -347,9 +278,94 @@ def get_triple_features(model, loader, deterministic=True):
 # 5. Main Execution
 # ==============================================================================
 
+# ==============================================================================
+# RL Training Function (REINFORCE)
+# ==============================================================================
+
+def train_rnn_rl(rnn_policy, train_loader, tabpfn, epochs=20, alpha_baseline=0.1):
+    # Reduced learning rate for fine-tuning
+    optimizer = torch.optim.Adam(rnn_policy.parameters(), lr=0.0001)
+    
+    # Initialize baseline roughly where we expect performance to be (e.g. 0.7)
+    # or start at 0.0 and let it catch up. 0.5 is a safe middle ground.
+    baseline = 0.6 
+    print(f"  [RL] Starting Fine-Tuning for {epochs} epochs...")
+    
+    for epoch in range(epochs):
+        rnn_policy.train()
+        epoch_rewards = []
+        epoch_loss = 0
+        
+        for batch_idx, (t_data, labels, s_data) in enumerate(train_loader):
+            optimizer.zero_grad()
+            
+            # --- A. Agent Acts ---
+            mu, sigma = rnn_policy(t_data)
+            
+            # Sample Action 'z'
+            dist_normal = dist.Normal(mu, sigma)
+            z_action = dist_normal.sample()
+            
+            # Calculate log_prob
+            log_prob = dist_normal.log_prob(z_action).sum(dim=1)
+            
+            # --- B. Environment (TabPFN) Rewards ---
+            with torch.no_grad():
+                last_vals = extract_last_values(t_data).cpu().numpy()
+                static_vals = s_data.numpy()
+                z_vals = z_action.cpu().numpy()
+                
+                # Combine features: [Last, Static, Z]
+                X_batch = np.hstack([last_vals, static_vals, z_vals])
+                y_true = labels.numpy().astype(int)
+                
+                # Get TabPFN predictions
+                probs = tabpfn.predict_proba(X_batch)
+                
+                # Reward = Confidence in the TRUE class
+                rewards = []
+                for i in range(len(y_true)):
+                    r = probs[i, y_true[i]]
+                    rewards.append(r)
+                
+                rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
+            
+            # --- C. Policy Update ---
+            batch_avg_reward = rewards.mean().item()
+            epoch_rewards.append(batch_avg_reward)
+            
+            # Update baseline (Moving Average)
+            baseline = (1 - alpha_baseline) * baseline + alpha_baseline * batch_avg_reward
+            
+            # Advantage
+            advantage = rewards - baseline
+            
+            # Loss
+            loss = -(log_prob * advantage).mean()
+            
+            # Entropy Regularization (keep small to prevent collapse)
+            entropy = dist_normal.entropy().mean()
+            loss = loss - 0.005 * entropy
+            
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(rnn_policy.parameters(), max_norm=1.0)
+            optimizer.step()
+            
+            epoch_loss += loss.item()
+
+        avg_r = np.mean(epoch_rewards)
+        if (epoch+1) % 5 == 0:
+            print(f"    Epoch {epoch+1}/{epochs} | Loss: {epoch_loss/len(train_loader):.4f} | Avg Reward: {avg_r:.4f} | Base: {baseline:.4f}")
+
+    return rnn_policy
+
+# ==============================================================================
+# Main Execution
+# ==============================================================================
+
 def main():
     print("="*80)
-    print("DEEP RL TRAINING: TabPFN as Reward Function")
+    print("STABLE DEEP RL: Warm-Up -> Frozen Judge -> RL Fine-Tuning")
     print("="*80)
 
     patients = load_and_prepare_patients()
@@ -366,40 +382,64 @@ def main():
         print(f"\n--- Fold {fold} ---")
         train_p_obj, val_p_obj = split_patients_train_val(train_full, val_ratio=0.1, seed=42+fold)
         
-        # 1. Datasets for RL (Normalized)
+        # 1. Prepare Datasets (Normalized for RNN)
         train_ds = HybridDataset(train_p_obj.patientList, temporal_feats, encoder)
         stats = train_ds.get_normalization_stats()
-        # Merge val for RL reward learning to maximize support set
+        # Merge Val into Train for RL to maximize support set for the Judge
+        # (Or keep separate if strict validation needed, but for small data, merging helps TabPFN)
         val_ds = HybridDataset(val_p_obj.patientList, temporal_feats, encoder, stats)
         test_ds = HybridDataset(test_p.patientList, temporal_feats, encoder, stats)
 
         train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=hybrid_collate_fn)
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
 
-        # 2. RL Pipeline
+        # Initialize Policy
         rnn_policy = GaussianRNNPolicy(len(temporal_feats), hidden_dim=16, z_dim=12).to(DEVICE)
-        
-        # Warmup TabPFN with initial random features
-        X_train_init, y_train_init = get_triple_features(rnn_policy, train_loader, deterministic=False)
-        
-        # Low config for training speed
-        tabpfn_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu') 
-        tabpfn_env.fit(X_train_init, y_train_init)
 
-        # Train Cycles
-        cycles = 3
-        epochs_per_cycle = 10
-        for c in range(cycles):
-            print(f"  [Cycle {c+1}] RL Optimization...")
-            rnn_policy = train_rnn_rl(rnn_policy, train_loader, tabpfn_env, epochs=epochs_per_cycle)
-            
-            # Update Environment
-            X_train_new, y_train_new = get_triple_features(rnn_policy, train_loader, deterministic=True)
-            tabpfn_env.fit(X_train_new, y_train_new)
+        # ==========================================
+        # STAGE 1: SUPERVISED WARM-UP
+        # ==========================================
+        print("  [Stage 1] Supervised Warm-Up (10 Epochs)...")
+        warmup_head = nn.Linear(12, 1).to(DEVICE)
+        warmup_opt = torch.optim.Adam(list(rnn_policy.parameters()) + list(warmup_head.parameters()), lr=0.001)
+        bce = nn.BCELoss()
 
-        # Final RL Eval (High config)
+        rnn_policy.train()
+        for epoch in range(10):
+            for t_data, labels, s_data in train_loader:
+                warmup_opt.zero_grad()
+                # Use mean for stable warmup
+                mu, _ = rnn_policy(t_data) 
+                pred = torch.sigmoid(warmup_head(mu)).squeeze()
+                loss = bce(pred, labels.to(DEVICE))
+                loss.backward()
+                warmup_opt.step()
+
+        # ==========================================
+        # STAGE 2: FIT TABPFN ENVIRONMENT ("THE JUDGE")
+        # ==========================================
+        print("  [Stage 2] Fitting TabPFN Environment...")
+        # Get the "warmed up" features
+        X_train_warm, y_train_warm = get_triple_features(rnn_policy, train_loader, deterministic=True)
+        
+        # Fit TabPFN ONCE. This becomes the fixed "Goal Post" for the RL agent.
+        # N_ensemble=4 is a good balance of speed vs accuracy for the reward signal.
+        tabpfn_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=4) 
+        tabpfn_env.fit(X_train_warm, y_train_warm)
+
+        # ==========================================
+        # STAGE 3: RL FINE-TUNING
+        # ==========================================
+        print("  [Stage 3] RL Optimization (Refining Z)...")
+        rnn_policy = train_rnn_rl(rnn_policy, train_loader, tabpfn_env, epochs=20)
+
+        # ==========================================
+        # FINAL EVALUATION
+        # ==========================================
         print("  [Final] Evaluating RL Agent...")
-        final_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Fit a fresh, high-quality TabPFN on the final refined features
+        final_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=32)
         X_train_final, y_train_final = get_triple_features(rnn_policy, train_loader, deterministic=True)
         X_test_final, y_test_final = get_triple_features(rnn_policy, test_loader, deterministic=True)
         
@@ -414,30 +454,25 @@ def main():
         metrics_rl['auc_pr'].append(pr_auc)
         print(f"  Fold {fold} RL Result | AUC: {auc_score:.4f} | PR-AUC: {pr_auc:.4f}")
 
-        # ------------------------------------------------------------------
-        # 3. BASELINE EVALUATION (The Fix)
-        # We explicitly reload the Raw/Pandas data for the baseline
-        # to ensure it matches the 0.86 performance.
-        # ------------------------------------------------------------------
+        # ==========================================
+        # BASELINE (Raw Data Pipeline)
+        # ==========================================
         print("  [Baseline] Evaluating Standard Last+Static (Pandas Pipeline)...")
         
-        # Use specific time windows as in original high-performing code
         df_train_temp = train_p_obj.getMeasuresBetween(
             pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True).drop(columns=["subject_id", "hadm_id", "stay_id"])
         
-        # Note: We use test_p (Patient object) from the outer loop
         df_test_temp = test_p.getMeasuresBetween(
             pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True).drop(columns=["subject_id", "hadm_id", "stay_id"])
 
-        # Encode (Raw values, NaN handling happens inside TabPFN)
         df_train_enc, df_test_enc, _ = encodeCategoricalData(df_train_temp, df_test_temp)
 
-        X_tr_b = df_train_enc.drop(columns=["akd"]).fillna(0) # Simple fill 0 for categorical compat
+        X_tr_b = df_train_enc.drop(columns=["akd"]).fillna(0)
         y_tr_b = df_train_enc["akd"]
         X_te_b = df_test_enc.drop(columns=["akd"]).fillna(0)
         y_te_b = df_test_enc["akd"]
 
-        base_pfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+        base_pfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=32)
         base_pfn.fit(X_tr_b, y_tr_b)
         y_prob_b = base_pfn.predict_proba(X_te_b)[:, 1]
         
