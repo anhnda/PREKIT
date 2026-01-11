@@ -83,15 +83,25 @@ print(f"Using device: {DEVICE}")
 # ============================================================================
 
 def get_all_temporal_features(patients):
-    """Get the complete set of temporal features across all patients."""
-    all_features = set()
+    """Get the complete set of temporal features across all patients.
 
-    for patient in patients.patientList:
-        for measure_name, measure_values in patient.measures.items():
-            if measure_name in FIXED_FEATURES:
-                continue
-            if hasattr(measure_values, 'keys') and hasattr(measure_values, 'values'):
-                all_features.add(measure_name)
+    Uses getMeasuresBetween to get the same feature set as MLP_OnlyTime.py
+    """
+    id_columns = ["subject_id", "hadm_id", "stay_id"]
+    label_column = "akd"
+
+    # Get features from the Patients object (not individual Patient)
+    df = patients.getMeasuresBetween(
+        pd.Timedelta(hours=-6),
+        pd.Timedelta(hours=24),
+        "last",
+        getUntilAkiPositive=True
+    )
+
+    # Get temporal features (exclude ID, label, and fixed features)
+    all_features = [col for col in df.columns
+                   if col not in id_columns + [label_column]
+                   and col not in FIXED_FEATURES]
 
     return sorted(all_features)
 
@@ -99,6 +109,8 @@ def get_all_temporal_features(patients):
 def extract_temporal_data(patient, feature_names, time_window_start=-6, time_window_end=24):
     """
     Extract temporal measurements from a patient into [times, values, masks] format.
+
+    CRITICAL: Respects AKI diagnosis time to prevent data leakage!
 
     Args:
         patient: Patient object
@@ -111,24 +123,47 @@ def extract_temporal_data(patient, feature_names, time_window_start=-6, time_win
         values: List of measurement vectors (one per timestamp)
         masks: List of mask vectors (1 if measured, 0 if missing)
     """
-    # Get temporal measures (SortedDict objects)
+    intime = patient.intime
+
+    # CRITICAL: Calculate cutoff time to prevent data leakage
+    # If patient has AKI, only use measurements BEFORE AKI diagnosis
+    if patient.akdPositive:
+        aki_cutoff_hours = patient.akdTime.total_seconds() / 3600
+        # Use the earlier of: window end or AKI time
+        effective_end = min(time_window_end, aki_cutoff_hours)
+    else:
+        effective_end = time_window_end
+
+    # Get temporal measures for each feature
     temporal_measures = {}
     for measure_name in feature_names:
         if measure_name in patient.measures:
             measure_values = patient.measures[measure_name]
+
+            # Handle both SortedDict and scalar/other types
             if hasattr(measure_values, 'keys') and hasattr(measure_values, 'values'):
-                temporal_measures[measure_name] = measure_values
+                # It's a SortedDict - filter by time
+                filtered_dict = {}
+                for timestamp, value in measure_values.items():
+                    ts = pd.Timestamp(timestamp)
+                    hours_from_admission = (ts - intime).total_seconds() / 3600
+
+                    # CRITICAL: Only include measurements within valid window
+                    if time_window_start <= hours_from_admission <= effective_end:
+                        filtered_dict[ts] = value
+
+                temporal_measures[measure_name] = filtered_dict
             else:
-                temporal_measures[measure_name] = {}  # Empty dict if not available
+                # Scalar or other type - can't extract time series
+                temporal_measures[measure_name] = {}
         else:
-            temporal_measures[measure_name] = {}  # Empty dict if not available
+            temporal_measures[measure_name] = {}
 
     # Get all unique timestamps across all features
     all_timestamps = set()
-
     for measure_dict in temporal_measures.values():
         for timestamp in measure_dict.keys():
-            all_timestamps.add(pd.Timestamp(timestamp))
+            all_timestamps.add(timestamp)
 
     if not all_timestamps:
         return None, None, None
@@ -136,20 +171,8 @@ def extract_temporal_data(patient, feature_names, time_window_start=-6, time_win
     # Sort timestamps
     all_timestamps = sorted(all_timestamps)
 
-    # Convert to hours from admission (intime)
-    intime = patient.intime
+    # Convert to hours from admission
     times_hours = [(t - intime).total_seconds() / 3600 for t in all_timestamps]
-
-    # Filter by time window
-    filtered_data = [(t, ts) for t, ts in zip(times_hours, all_timestamps)
-                     if time_window_start <= t <= time_window_end]
-
-    if not filtered_data:
-        return None, None, None
-
-    times_hours, all_timestamps = zip(*filtered_data)
-    times_hours = list(times_hours)
-    all_timestamps = list(all_timestamps)
 
     # Normalize times for numerical stability
     # Scale to [0, 1] range within the observation window
