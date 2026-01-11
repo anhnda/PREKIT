@@ -35,6 +35,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torchdiffeq import odeint
+from tqdm import tqdm
 from sklearn.metrics import (
     accuracy_score,
     recall_score,
@@ -476,7 +477,7 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=50):
         total_loss = 0
         num_batches = 0
 
-        for batch_data, labels in train_loader:
+        for batch_data, labels in enumerate(tqdm(train_loader)):
             labels = labels.to(DEVICE)
 
             # Forward pass (now fully batched!)
