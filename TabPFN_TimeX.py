@@ -1,7 +1,7 @@
 """
-TRIPLE HYBRID MODEL: [Learned Trend + Last Value + Static Context] -> XGBoost
+TRIPLE HYBRID MODEL: [Learned Trend + Last Value + Static Context] -> TabPFN
 vs
-STRONG BASELINE: [Last Value + Static Context] -> XGBoost
+STRONG BASELINE: [Last Value + Static Context] -> TabPFN
 
 Features:
 - Categorical Encoding (for Gender/Race)
@@ -36,6 +36,7 @@ PT = "/Users/anhnd/CodingSpace/Python/PREDKIT"
 if sys.platform != "darwin":
     PT = "/home/anhnda/PREKIT"
 sys.path.append(PT)
+
 
 from constants import NULLABLE_MEASURES
 from utils.class_patient import Patients
@@ -98,7 +99,7 @@ class SimpleStaticEncoder:
         return vec
 
 class GatedDecisionHead(nn.Module):
-    """Mimics XGBoost logic for RNN pre-training"""
+    """Mimics Tree logic for RNN pre-training"""
     def __init__(self, input_dim, hidden_dim=64, dropout=0.3):
         super(GatedDecisionHead, self).__init__()
         self.gate = nn.Sequential(nn.Linear(input_dim, input_dim), nn.Sigmoid())
@@ -371,7 +372,7 @@ def main():
         X_val, y_val = get_triple_features(rnn, val_loader)
         X_test, y_test = get_triple_features(rnn, test_loader)
         
-        # 4. Stage 3: XGBoost Training
+        # 4. Stage 3: TabPFN Training
         ratio = np.sum(y_train==0) / (np.sum(y_train==1) + 1e-6)
         
         clf = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
@@ -396,9 +397,9 @@ def main():
         ax1.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {metrics_hybrid['auc'][-1]:.3f})")
         
         # ======================================================================
-        # BASELINE: Standard XGBoost (Last Values + Static)
+        # BASELINE: Standard TabPFN (Last Values + Static)
         # ======================================================================
-        print("  [Baseline] Training Standard XGBoost (Last + Static)...")
+        print("  [Baseline] Training Standard TabPFN (Last + Static)...")
         
         # Extract "Last Values"
         df_train_temp = train_p_obj.getMeasuresBetween(
