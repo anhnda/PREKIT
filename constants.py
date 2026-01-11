@@ -1,12 +1,15 @@
 from pathlib import Path
 from pandasql import PandaSQL
+import sys
 from secret import MIMIC_PATH_STR, POSTGRESQL_CONNECTION_STRING
 
 
 MIMIC_PATH = Path(MIMIC_PATH_STR)
-
+PT = "/Users/anhnd/CodingSpace/Python/PREDKIT"
+if sys.platform != "darwin":  
+    PT = "/home/anhnda/PREKIT"
 # temporary path
-TEMP_PATH = Path("/Users/anhnd/CodingSpace/Python/PREDKIT/tmp")
+TEMP_PATH = Path( "%s/tmp"  %PT)
 TEMP_PATH.mkdir(parents=True, exist_ok=True)
 
 # result path 
