@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from xgboost import XGBClassifier
+from pytorch_tabnet.tab_network import TabNet
 from sklearn.metrics import (
     accuracy_score,
     recall_score,
@@ -69,17 +70,30 @@ class TimeEmbeddingExtractor(nn.Module):
 
 def train_embedding_extractor(model, train_loader, val_loader, criterion, optimizer,
                                num_epochs=100, eval_every=5, patience=10):
-    """Train Time-Embedded RNN for embedding extraction."""
+    """Train Time-Embedded RNN for embedding extraction with TabNet head."""
 
     best_val_auc = 0.0
     best_model_state = None
     epochs_without_improvement = 0
 
-    # Temporary classifier head for training
-    temp_classifier = nn.Sequential(
-        nn.Linear(model.rnn_cell.hidden_dim, 1),
-        nn.Sigmoid()
+    # TabNet classifier head for training
+    input_dim = model.rnn_cell.hidden_dim
+    temp_classifier = TabNet(
+        input_dim=input_dim,
+        output_dim=1,
+        n_d=32,  # Width of the decision prediction layer
+        n_a=32,  # Width of the attention embedding
+        n_steps=3,  # Number of sequential decision steps
+        gamma=1.3,  # Coefficient for feature reusage
+        n_independent=2,  # Number of independent GLU layers
+        n_shared=2,  # Number of shared GLU layers
+        epsilon=1e-15,
+        momentum=0.02,
+        mask_type='sparsemax'
     ).to(DEVICE)
+
+    # Create separate optimizer for TabNet
+    tabnet_optimizer = torch.optim.Adam(temp_classifier.parameters(), lr=0.001)
 
     for epoch in range(num_epochs):
         model.train()
@@ -88,16 +102,24 @@ def train_embedding_extractor(model, train_loader, val_loader, criterion, optimi
         num_batches = 0
 
         for batch_data, labels in train_loader:
-            labels = labels.to(DEVICE)
+            labels = labels.to(DEVICE).float()
 
             # Get embeddings
             embeddings = model(batch_data)
-            predictions = temp_classifier(embeddings).squeeze(-1)
-            loss = criterion(predictions, labels)
+
+            # Forward through TabNet
+            predictions, M_loss = temp_classifier(embeddings)
+            predictions = torch.sigmoid(predictions.squeeze(-1))
+
+            # Loss = classification loss + sparsity loss
+            classification_loss = criterion(predictions, labels)
+            loss = classification_loss - 1e-3 * M_loss  # Negative because we want to maximize sparsity
 
             optimizer.zero_grad()
+            tabnet_optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            tabnet_optimizer.step()
 
             total_loss += loss.item()
             num_batches += 1
@@ -114,7 +136,8 @@ def train_embedding_extractor(model, train_loader, val_loader, criterion, optimi
             with torch.no_grad():
                 for batch_data, labels in val_loader:
                     embeddings = model(batch_data)
-                    predictions = temp_classifier(embeddings).squeeze(-1)
+                    predictions, _ = temp_classifier(embeddings)
+                    predictions = torch.sigmoid(predictions.squeeze(-1))
                     val_predictions.extend(predictions.cpu().numpy())
                     val_labels.extend(labels.cpu().numpy())
 
