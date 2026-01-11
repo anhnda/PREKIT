@@ -403,7 +403,7 @@ def main():
         
         # 2. Stage 1: RNN Training
         rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=48).to(DEVICE)
-        opt = torch.optim.Adam(rnn.parameters(), lr=0.001)
+        opt = torch.optim.Adam(rnn.parameters(), lr=0.0005)
         rnn = train_rnn_extractor(rnn, train_loader, val_loader, nn.BCELoss(), opt)
         
         # 3. Stage 2: Triple Feature Fusion
