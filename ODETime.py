@@ -477,11 +477,11 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=50):
     """Train the ODE-RNN model with batched processing."""
     model.train()
 
-    for epoch in range(num_epochs):
+    for epoch in tqdm(range(num_epochs), desc="Training Epochs"):
         total_loss = 0
         num_batches = 0
 
-        for batch_data, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+        for batch_data, labels in train_loader:
             labels = labels.to(DEVICE)
 
             # Forward pass (now fully batched!)
