@@ -376,7 +376,7 @@ def main():
         
         clf = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
 
-        clf.fit(X_train, y_train, verbose=False)
+        clf.fit(X_train, y_train)
         
         # 5. Hybrid Evaluation
         y_prob = clf.predict_proba(X_test)[:, 1]
