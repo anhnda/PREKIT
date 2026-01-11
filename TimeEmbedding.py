@@ -340,7 +340,7 @@ class TimeEmbeddedRNNModel(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(hidden_dim, 64),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.5),
             nn.Linear(64, output_dim),
             nn.Sigmoid()
         )
@@ -504,11 +504,11 @@ def main():
         ).to(DEVICE)
 
         criterion = nn.BCELoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
         # Train
         print("\nTraining...")
-        model = train_model(model, train_loader, criterion, optimizer, num_epochs=100)
+        model = train_model(model, train_loader, criterion, optimizer, num_epochs=60)
 
         # Evaluate
         print("\nEvaluating...")
