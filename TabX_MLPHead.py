@@ -69,7 +69,7 @@ FIXED_FEATURES = [
 ]
 
 # ==============================================================================
-# 1. Helpers: Encoder & Gated Head
+# 1. Helpers: Encoder & TabPFNMimic
 # ==============================================================================
 
 class SimpleStaticEncoder:
@@ -265,7 +265,7 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
     rnn_dim = model.rnn_cell.hidden_dim
     static_dim = len(FIXED_FEATURES)
     
-    # Pre-train using [RNN + Static] -> Gated Head
+    # Pre-train using [RNN + Static] -> TabPFNMimic
     temp_head = TabPFNMimicHead(
         input_dim=rnn_dim + static_dim, 
         hidden_dim=64, 
@@ -278,7 +278,7 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
     patience = 6
     counter = 0
     
-    print("  [Stage 1] Pre-training RNN with Gated Head...")
+    print("  [Stage 1] Pre-training RNN with TabPFNMimic...")
     for epoch in range(epochs):
         model.train()
         temp_head.train()
