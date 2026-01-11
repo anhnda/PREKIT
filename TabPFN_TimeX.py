@@ -109,7 +109,7 @@ class SimpleStaticEncoder:
 
 class GatedDecisionHead(nn.Module):
     """Mimics Tree logic for RNN pre-training"""
-    def __init__(self, input_dim, hidden_dim=64, dropout=0.3):
+    def __init__(self, input_dim, hidden_dim=32, dropout=0.3):
         super(GatedDecisionHead, self).__init__()
         self.gate = nn.Sequential(nn.Linear(input_dim, input_dim), nn.Sigmoid())
         self.fc1 = nn.Linear(input_dim, hidden_dim * 2) 
@@ -371,7 +371,7 @@ def main():
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
         
         # 2. Stage 1: RNN Training
-        rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=128).to(DEVICE)
+        rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=48).to(DEVICE)
         opt = torch.optim.Adam(rnn.parameters(), lr=0.001)
         rnn = train_rnn_extractor(rnn, train_loader, val_loader, nn.BCELoss(), opt)
         
