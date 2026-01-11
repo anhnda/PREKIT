@@ -477,7 +477,7 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=50):
         total_loss = 0
         num_batches = 0
 
-        for batch_data, labels in enumerate(tqdm(train_loader)):
+        for batch_data, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
             labels = labels.to(DEVICE)
 
             # Forward pass (now fully batched!)
