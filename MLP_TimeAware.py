@@ -203,6 +203,15 @@ def evaluate_model():
         X_test = df_test.drop(columns=[LABEL_COLUMN])
         y_test = df_test[LABEL_COLUMN]
 
+        # Ensure test has same columns as train (in same order)
+        # Add missing columns with 0, remove extra columns
+        missing_cols = set(X_train.columns) - set(X_test.columns)
+        for col in missing_cols:
+            X_test[col] = 0
+
+        # Reorder test columns to match train
+        X_test = X_test[X_train.columns]
+
         # Fill missing values with 0
         X_train = X_train.fillna(0)
         X_test = X_test.fillna(0)
