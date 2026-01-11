@@ -272,7 +272,7 @@ def main():
             model, train_loader, val_loader, criterion, optimizer,
             num_epochs=100,
             eval_every=5,
-            patience=10
+            patience=4
         )
 
         # Evaluate on test set
