@@ -1,10 +1,17 @@
 """
-CORRECTED: Deep RL (REINFORCE) with High-Performance Baseline
+DEEP RL FOR TABULAR TIME SERIES (Stable & High Performance)
 
-Changes:
-1. RL Training: Uses REINFORCE to optimize RNN features based on TabPFN confidence.
-2. Baseline Fix: Uses the original Pandas/Raw data pipeline for the Baseline (Last+Static) 
-   to ensure the AUC returns to ~0.86.
+Key Features:
+1. Dual Data Pipeline:
+   - RNN sees NORMALIZED data (Z-scored) for stable training.
+   - TabPFN sees RAW data (preserving distributions) for high accuracy.
+2. Architecture:
+   - Agent: Gaussian RNN Policy (outputs Mean & Std for embedding Z).
+   - Environment: TabPFN (frozen judge providing reward).
+3. Training Strategy:
+   - Stage 1: Supervised Warm-Up (forces Z to be predictive).
+   - Stage 2: Fit Environment (TabPFN learns the Z manifold).
+   - Stage 3: REINFORCE (fine-tunes Z to maximize TabPFN confidence).
 """
 
 import pandas as pd
@@ -74,7 +81,7 @@ FIXED_FEATURES = [
 ]
 
 # ==============================================================================
-# 1. Helpers: Encoder & Dataset (For RNN Pipeline)
+# 1. Helpers: Encoder & Hybrid Dataset (The Fix)
 # ==============================================================================
 
 class SimpleStaticEncoder:
@@ -121,6 +128,7 @@ class HybridDataset(Dataset):
         all_values = []
         patient_list = patients.patientList if hasattr(patients, 'patientList') else patients
 
+        # 1. Collect Raw Data
         for patient in patient_list:
             times, values, masks = extract_temporal_data(patient, feature_names)
             if times is None: continue
@@ -128,13 +136,20 @@ class HybridDataset(Dataset):
             s_vec = static_encoder.transform(patient)
             
             self.static_data.append(torch.tensor(s_vec, dtype=torch.float32))
-            self.data.append({'times': times, 'values': values, 'masks': masks})
+            
+            # Note: We store the RAW values initially
+            self.data.append({
+                'times': times, 
+                'values': values, 
+                'masks': masks
+            })
             self.labels.append(1 if patient.akdPositive else 0)
             
             for v_vec, m_vec in zip(values, masks):
                 for v, m in zip(v_vec, m_vec):
                     if m > 0: all_values.append(v)
 
+        # 2. Compute Normalization Stats (Mean/Std)
         if normalization_stats is None:
             all_values = np.array(all_values)
             self.mean = np.mean(all_values) if len(all_values) > 0 else 0.0
@@ -143,16 +158,23 @@ class HybridDataset(Dataset):
             self.mean = normalization_stats['mean']
             self.std = normalization_stats['std']
 
+        # 3. Process Tensors: Create BOTH Normalized and Raw versions
         for i in range(len(self.data)):
+            raw_vals = self.data[i]['values']
+            masks = self.data[i]['masks']
+            
+            # Create Normalized Copy (for RNN)
             norm_values = []
-            for v_vec, m_vec in zip(self.data[i]['values'], self.data[i]['masks']):
+            for v_vec, m_vec in zip(raw_vals, masks):
                 norm = [(v - self.mean)/self.std if m>0 else 0.0 for v, m in zip(v_vec, m_vec)]
                 norm_values.append(norm)
             
+            # Store everything
             self.data[i] = {
                 'times': torch.tensor(self.data[i]['times'], dtype=torch.float32),
-                'values': torch.tensor(norm_values, dtype=torch.float32),
-                'masks': torch.tensor(self.data[i]['masks'], dtype=torch.float32)
+                'norm_values': torch.tensor(norm_values, dtype=torch.float32), # For RNN Input
+                'raw_values': torch.tensor(raw_vals, dtype=torch.float32),     # For TabPFN Reward
+                'masks': torch.tensor(masks, dtype=torch.float32)
             }
 
     def get_normalization_stats(self):
@@ -168,46 +190,56 @@ def hybrid_collate_fn(batch):
     data_list, label_list, static_list = zip(*batch)
     lengths = [len(d['times']) for d in data_list]
     max_len = max(lengths)
-    feat_dim = data_list[0]['values'].shape[-1]
+    feat_dim = data_list[0]['norm_values'].shape[-1]
     batch_size = len(data_list)
 
     padded_times = torch.zeros(batch_size, max_len)
-    padded_values = torch.zeros(batch_size, max_len, feat_dim)
+    padded_norm_values = torch.zeros(batch_size, max_len, feat_dim)
+    padded_raw_values = torch.zeros(batch_size, max_len, feat_dim)
     padded_masks = torch.zeros(batch_size, max_len, feat_dim)
 
     for i, d in enumerate(data_list):
         l = lengths[i]
         padded_times[i, :l] = d['times']
-        padded_values[i, :l] = d['values']
+        padded_norm_values[i, :l] = d['norm_values']
+        padded_raw_values[i, :l] = d['raw_values']
         padded_masks[i, :l] = d['masks']
         
     temporal_batch = {
-        'times': padded_times, 'values': padded_values, 
-        'masks': padded_masks, 'lengths': torch.tensor(lengths)
+        'times': padded_times, 
+        'norm_values': padded_norm_values,
+        'raw_values': padded_raw_values,
+        'masks': padded_masks, 
+        'lengths': torch.tensor(lengths)
     }
     return temporal_batch, torch.tensor(label_list, dtype=torch.float32), torch.stack(static_list)
 
-def extract_last_values(t_data):
+def extract_last_raw_values(t_data):
     """
-    Extracts last values from tensors. 
-    NOTE: These are normalized values (because dataset is normalized).
-    Used for RL state construction.
+    Extracts the LAST observed values from the RAW data tensor.
+    This ensures TabPFN sees the original distribution (e.g. Creatinine=1.2)
+    instead of Z-scores.
     """
-    vals = t_data['values'].to(DEVICE)
+    vals = t_data['raw_values'].to(DEVICE)
     masks = t_data['masks'].to(DEVICE)
     batch_last_vals = []
+    
     for i in range(vals.shape[0]):
         patient_last = []
         for f_idx in range(vals.shape[2]):
             f_vals = vals[i, :, f_idx]
             f_mask = masks[i, :, f_idx]
             valid_idx = torch.where(f_mask > 0)[0]
+            
             if len(valid_idx) > 0:
                 last_v = f_vals[valid_idx[-1]]
             else:
-                last_v = torch.tensor(0.0, device=DEVICE)
+                # For raw data, 0.0 might be misleading if 0 is a valid value (e.g. Temp).
+                # But TabPFN handles sparse data well.
+                last_v = torch.tensor(0.0, device=DEVICE) 
             patient_last.append(last_v)
         batch_last_vals.append(torch.stack(patient_last))
+        
     return torch.stack(batch_last_vals)
 
 # ==============================================================================
@@ -219,26 +251,24 @@ class GaussianRNNPolicy(nn.Module):
         super().__init__()
         self.rnn_cell = TimeEmbeddedRNNCell(input_dim, hidden_dim)
         
-        # Policy Heads
         self.mu_head = nn.Linear(hidden_dim, z_dim)
         self.log_sigma_head = nn.Linear(hidden_dim, z_dim)
         
-        # Init sigma small to prevent initial explosion
+        # Init sigma small
         nn.init.constant_(self.log_sigma_head.weight, 0)
         nn.init.constant_(self.log_sigma_head.bias, -1.0) 
 
     def forward(self, batch_data):
+        # CRITICAL: RNN uses NORMALIZED values to learn effectively
         h = self.rnn_cell(
             batch_data['times'].to(DEVICE),
-            batch_data['values'].to(DEVICE),
+            batch_data['norm_values'].to(DEVICE), 
             batch_data['masks'].to(DEVICE),
             batch_data['lengths'].to(DEVICE)
         )
         
         mu = self.mu_head(h)
         log_sigma = self.log_sigma_head(h)
-        
-        # Clamp sigma (e.g. 0.006 to 1.6)
         sigma = torch.exp(torch.clamp(log_sigma, min=-5, max=0.5))
         
         return mu, sigma
@@ -247,48 +277,14 @@ class GaussianRNNPolicy(nn.Module):
         mu, _ = self.forward(batch_data)
         return mu
 
-
 # ==============================================================================
-# 4. Feature Getter
-# ==============================================================================
-
-def get_triple_features(model, loader, deterministic=True):
-    model.eval()
-    features = []
-    labels_out = []
-    
-    with torch.no_grad():
-        for t_data, labels, s_data in loader:
-            if deterministic:
-                z = model.get_deterministic_embedding(t_data).cpu().numpy()
-            else:
-                mu, sigma = model(t_data)
-                z = dist.Normal(mu, sigma).sample().cpu().numpy()
-                
-            s = s_data.numpy()
-            last_vals = extract_last_values(t_data).cpu().numpy()
-            
-            combined = np.hstack([last_vals, s, z])
-            features.append(combined)
-            labels_out.extend(labels.numpy())
-            
-    return np.vstack(features), np.array(labels_out)
-
-# ==============================================================================
-# 5. Main Execution
-# ==============================================================================
-
-# ==============================================================================
-# RL Training Function (REINFORCE)
+# 3. RL Training (REINFORCE) with Feature Mixing
 # ==============================================================================
 
 def train_rnn_rl(rnn_policy, train_loader, tabpfn, epochs=20, alpha_baseline=0.1):
-    # Reduced learning rate for fine-tuning
     optimizer = torch.optim.Adam(rnn_policy.parameters(), lr=0.0001)
-    
-    # Initialize baseline roughly where we expect performance to be (e.g. 0.7)
-    # or start at 0.0 and let it catch up. 0.5 is a safe middle ground.
     baseline = 0.6 
+    
     print(f"  [RL] Starting Fine-Tuning for {epochs} epochs...")
     
     for epoch in range(epochs):
@@ -301,28 +297,23 @@ def train_rnn_rl(rnn_policy, train_loader, tabpfn, epochs=20, alpha_baseline=0.1
             
             # --- A. Agent Acts ---
             mu, sigma = rnn_policy(t_data)
-            
-            # Sample Action 'z'
             dist_normal = dist.Normal(mu, sigma)
             z_action = dist_normal.sample()
-            
-            # Calculate log_prob
             log_prob = dist_normal.log_prob(z_action).sum(dim=1)
             
             # --- B. Environment (TabPFN) Rewards ---
             with torch.no_grad():
-                last_vals = extract_last_values(t_data).cpu().numpy()
+                # CRITICAL: Use RAW values for the Reward Signal
+                last_vals = extract_last_raw_values(t_data).cpu().numpy()
                 static_vals = s_data.numpy()
                 z_vals = z_action.cpu().numpy()
                 
-                # Combine features: [Last, Static, Z]
+                # Combine: [Raw_Last, Raw_Static, RNN_Embedding]
                 X_batch = np.hstack([last_vals, static_vals, z_vals])
                 y_true = labels.numpy().astype(int)
                 
-                # Get TabPFN predictions
                 probs = tabpfn.predict_proba(X_batch)
                 
-                # Reward = Confidence in the TRUE class
                 rewards = []
                 for i in range(len(y_true)):
                     r = probs[i, y_true[i]]
@@ -330,20 +321,14 @@ def train_rnn_rl(rnn_policy, train_loader, tabpfn, epochs=20, alpha_baseline=0.1
                 
                 rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
             
-            # --- C. Policy Update ---
+            # --- C. Update ---
             batch_avg_reward = rewards.mean().item()
             epoch_rewards.append(batch_avg_reward)
             
-            # Update baseline (Moving Average)
             baseline = (1 - alpha_baseline) * baseline + alpha_baseline * batch_avg_reward
-            
-            # Advantage
             advantage = rewards - baseline
             
-            # Loss
             loss = -(log_prob * advantage).mean()
-            
-            # Entropy Regularization (keep small to prevent collapse)
             entropy = dist_normal.entropy().mean()
             loss = loss - 0.005 * entropy
             
@@ -360,12 +345,40 @@ def train_rnn_rl(rnn_policy, train_loader, tabpfn, epochs=20, alpha_baseline=0.1
     return rnn_policy
 
 # ==============================================================================
-# Main Execution
+# 4. Feature Getter (Corrected)
+# ==============================================================================
+
+def get_triple_features(model, loader, deterministic=True):
+    model.eval()
+    features = []
+    labels_out = []
+    
+    with torch.no_grad():
+        for t_data, labels, s_data in loader:
+            if deterministic:
+                z = model.get_deterministic_embedding(t_data).cpu().numpy()
+            else:
+                mu, sigma = model(t_data)
+                z = dist.Normal(mu, sigma).sample().cpu().numpy()
+                
+            s = s_data.numpy()
+            # CRITICAL: Use Raw Values here too!
+            last_vals = extract_last_raw_values(t_data).cpu().numpy()
+            
+            combined = np.hstack([last_vals, s, z])
+            features.append(combined)
+            labels_out.extend(labels.numpy())
+            
+    return np.vstack(features), np.array(labels_out)
+
+# ==============================================================================
+# 5. Main Execution
 # ==============================================================================
 
 def main():
     print("="*80)
     print("STABLE DEEP RL: Warm-Up -> Frozen Judge -> RL Fine-Tuning")
+    print("with Corrected Data Pipeline (Raw for TabPFN, Norm for RNN)")
     print("="*80)
 
     patients = load_and_prepare_patients()
@@ -382,22 +395,19 @@ def main():
         print(f"\n--- Fold {fold} ---")
         train_p_obj, val_p_obj = split_patients_train_val(train_full, val_ratio=0.1, seed=42+fold)
         
-        # 1. Prepare Datasets (Normalized for RNN)
+        # 1. Prepare Datasets (Handles both Raw and Norm internally)
         train_ds = HybridDataset(train_p_obj.patientList, temporal_feats, encoder)
         stats = train_ds.get_normalization_stats()
-        # Merge Val into Train for RL to maximize support set for the Judge
-        # (Or keep separate if strict validation needed, but for small data, merging helps TabPFN)
         val_ds = HybridDataset(val_p_obj.patientList, temporal_feats, encoder, stats)
         test_ds = HybridDataset(test_p.patientList, temporal_feats, encoder, stats)
 
         train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=hybrid_collate_fn)
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
 
-        # Initialize Policy
         rnn_policy = GaussianRNNPolicy(len(temporal_feats), hidden_dim=16, z_dim=12).to(DEVICE)
 
         # ==========================================
-        # STAGE 1: SUPERVISED WARM-UP
+        # STAGE 1: SUPERVISED WARM-UP (Using Norm Values via RNN)
         # ==========================================
         print("  [Stage 1] Supervised Warm-Up (10 Epochs)...")
         warmup_head = nn.Linear(12, 1).to(DEVICE)
@@ -408,7 +418,6 @@ def main():
         for epoch in range(10):
             for t_data, labels, s_data in train_loader:
                 warmup_opt.zero_grad()
-                # Use mean for stable warmup
                 mu, _ = rnn_policy(t_data) 
                 pred = torch.sigmoid(warmup_head(mu)).squeeze()
                 loss = bce(pred, labels.to(DEVICE))
@@ -419,12 +428,10 @@ def main():
         # STAGE 2: FIT TABPFN ENVIRONMENT ("THE JUDGE")
         # ==========================================
         print("  [Stage 2] Fitting TabPFN Environment...")
-        # Get the "warmed up" features
+        # Get [Raw_Last, Raw_Static, Z_warm]
         X_train_warm, y_train_warm = get_triple_features(rnn_policy, train_loader, deterministic=True)
         
-        # Fit TabPFN ONCE. This becomes the fixed "Goal Post" for the RL agent.
-        # N_ensemble=4 is a good balance of speed vs accuracy for the reward signal.
-        tabpfn_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu') 
+        tabpfn_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=4) 
         tabpfn_env.fit(X_train_warm, y_train_warm)
 
         # ==========================================
@@ -438,8 +445,7 @@ def main():
         # ==========================================
         print("  [Final] Evaluating RL Agent...")
         
-        # Fit a fresh, high-quality TabPFN on the final refined features
-        final_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+        final_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=32)
         X_train_final, y_train_final = get_triple_features(rnn_policy, train_loader, deterministic=True)
         X_test_final, y_test_final = get_triple_features(rnn_policy, test_loader, deterministic=True)
         
@@ -472,7 +478,7 @@ def main():
         X_te_b = df_test_enc.drop(columns=["akd"]).fillna(0)
         y_te_b = df_test_enc["akd"]
 
-        base_pfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+        base_pfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=32)
         base_pfn.fit(X_tr_b, y_tr_b)
         y_prob_b = base_pfn.predict_proba(X_te_b)[:, 1]
         
