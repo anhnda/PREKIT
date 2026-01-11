@@ -1,6 +1,9 @@
 """
-PURE TEMPORAL HYBRID: Time-Embedded RNN + XGBoost
-(NO STATIC FEATURES / DEMOGRAPHICS)
+GOLD STANDARD: PURE TEMPORAL HYBRID vs BASELINE
+- Architecture: Time-Embedded RNN (Gated) + XGBoost
+- Features: Temporal Only (NO Demographics/Static)
+- Comparison: vs. XGBoost on "Last Values"
+- Metrics: Full Suite (Specificity, AUC-PR, etc.)
 """
 
 import pandas as pd
@@ -42,13 +45,10 @@ from TimeEmbeddingVal import (
 from TimeEmbedding import DEVICE, TimeEmbeddedRNNCell
 
 # ==============================================================================
-# 1. Gated Decision Head (Optimized for Temporal Embeddings Only)
+# 1. Gated Decision Head (For RNN Pre-training)
 # ==============================================================================
 
 class GatedDecisionHead(nn.Module):
-    """
-    Learns to classify the RNN embeddings using tree-like logic (GLU).
-    """
     def __init__(self, input_dim, hidden_dim=64, dropout=0.3):
         super(GatedDecisionHead, self).__init__()
         self.gate = nn.Sequential(nn.Linear(input_dim, input_dim), nn.Sigmoid())
@@ -77,8 +77,6 @@ class TemporalDataset(Dataset):
     def __init__(self, patients, feature_names, normalization_stats=None):
         self.data = []
         self.labels = []
-        
-        # Support both list of patients or Patients object
         patient_list = patients.patientList if hasattr(patients, 'patientList') else patients
         all_values = []
 
@@ -93,7 +91,6 @@ class TemporalDataset(Dataset):
                 for v, m in zip(v_vec, m_vec):
                     if m > 0: all_values.append(v)
 
-        # Normalization
         if normalization_stats is None:
             all_values = np.array(all_values)
             self.mean = np.mean(all_values) if len(all_values) > 0 else 0.0
@@ -147,7 +144,7 @@ def temporal_collate_fn(batch):
     return temporal_batch, torch.tensor(label_list, dtype=torch.float32)
 
 # ==============================================================================
-# 3. RNN Feature Extractor (The Backbone)
+# 3. RNN Feature Extractor
 # ==============================================================================
 
 class RNNFeatureExtractor(nn.Module):
@@ -163,16 +160,10 @@ class RNNFeatureExtractor(nn.Module):
         return self.rnn_cell(times, values, masks, lengths)
 
 def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, epochs=50):
-    # Pure Temporal Dimensions
     rnn_dim = model.rnn_cell.hidden_dim
-    
-    # Train using the Gated Head on just RNN output
+    # Pure Temporal: Input dim is just RNN hidden size
     temp_head = GatedDecisionHead(input_dim=rnn_dim).to(DEVICE)
-    
-    full_optimizer = torch.optim.Adam(
-        list(model.parameters()) + list(temp_head.parameters()), 
-        lr=0.001
-    )
+    full_optimizer = torch.optim.Adam(list(model.parameters()) + list(temp_head.parameters()), lr=0.001)
     
     best_auc = 0
     best_state = None
@@ -189,7 +180,6 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
             h = model(t_data)
             preds = temp_head(h).squeeze(-1)
             loss = criterion(preds, labels)
-            
             full_optimizer.zero_grad()
             loss.backward()
             full_optimizer.step()
@@ -217,7 +207,6 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
                 if counter >= patience: break
                 
     model.load_state_dict(best_state)
-    print(f"  RNN Pre-trained. Best Val AUC: {best_auc:.4f}")
     return model
 
 def get_rnn_features(model, loader):
@@ -232,28 +221,32 @@ def get_rnn_features(model, loader):
     return np.vstack(features), np.array(labels_out)
 
 # ==============================================================================
-# 4. Main
+# 4. Main Execution
 # ==============================================================================
 
 def main():
     print("="*80)
-    print("PURE TEMPORAL HYBRID: TIME-EMBEDDED RNN + XGBOOST")
+    print("PURE TEMPORAL HYBRID vs BASELINE")
     print("="*80)
     
     patients = load_and_prepare_patients()
     temporal_feats = get_all_temporal_features(patients)
-    print(f"Input: {len(temporal_feats)} Temporal Features ONLY")
+    print(f"Features: {len(temporal_feats)} Temporal Only (No Static)")
     
-    metrics = {k: [] for k in ['auc', 'acc', 'spec', 'prec', 'rec', 'auc_pr']}
+    # Storage for comparison
+    metrics_hybrid = {k: [] for k in ['auc', 'acc', 'spec', 'prec', 'rec', 'auc_pr']}
+    metrics_base = {k: [] for k in ['auc', 'acc', 'spec', 'prec', 'rec', 'auc_pr']}
     
-    fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     
     for fold, (train_full, test_p) in enumerate(trainTestPatients(patients)):
         print(f"\n--- Fold {fold} ---")
         train_p_obj, val_p_obj = split_patients_train_val(train_full, val_ratio=0.1, seed=42+fold)
         train_p, val_p, test_p_list = train_p_obj.patientList, val_p_obj.patientList, test_p.patientList
         
-        # 1. Dataset
+        # ----------------------------------------------------------------------
+        # A. HYBRID MODEL (Time-Embedded RNN + XGBoost)
+        # ----------------------------------------------------------------------
         train_ds = TemporalDataset(train_p, temporal_feats)
         stats = train_ds.get_normalization_stats()
         val_ds = TemporalDataset(val_p, temporal_feats, stats)
@@ -263,65 +256,114 @@ def main():
         val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=temporal_collate_fn)
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=temporal_collate_fn)
         
-        # 2. Stage 1: RNN Training
         rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=128).to(DEVICE)
         opt = torch.optim.Adam(rnn.parameters(), lr=0.001)
         rnn = train_rnn_extractor(rnn, train_loader, val_loader, nn.BCELoss(), opt)
         
-        # 3. Stage 2: Extract Embeddings (128 dims)
         X_train, y_train = get_rnn_features(rnn, train_loader)
         X_val, y_val = get_rnn_features(rnn, val_loader)
         X_test, y_test = get_rnn_features(rnn, test_loader)
         
-        # 4. Stage 3: XGBoost Training
         ratio = np.sum(y_train==0) / (np.sum(y_train==1) + 1e-6)
-        
         clf = XGBClassifier(
-            n_estimators=1000, max_depth=5, learning_rate=0.05,
+            n_estimators=1000, max_depth=5, learning_rate=0.05, 
             subsample=0.8, colsample_bytree=0.8, scale_pos_weight=ratio, 
             early_stopping_rounds=30, eval_metric='auc', random_state=42
         )
         clf.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         
-        # 5. Evaluation
         y_prob = clf.predict_proba(X_test)[:, 1]
         y_pred = (y_prob > 0.5).astype(int)
         
         tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
         prec, rec, _ = precision_recall_curve(y_test, y_prob)
         
-        metrics['auc'].append(roc_auc_score(y_test, y_prob))
-        metrics['acc'].append(accuracy_score(y_test, y_pred))
-        metrics['spec'].append(tn / (tn + fp))
-        metrics['prec'].append(precision_score(y_test, y_pred, zero_division=0))
-        metrics['rec'].append(recall_score(y_test, y_pred))
-        metrics['auc_pr'].append(auc(rec, prec))
+        metrics_hybrid['auc'].append(roc_auc_score(y_test, y_prob))
+        metrics_hybrid['acc'].append(accuracy_score(y_test, y_pred))
+        metrics_hybrid['spec'].append(tn / (tn + fp))
+        metrics_hybrid['prec'].append(precision_score(y_test, y_pred, zero_division=0))
+        metrics_hybrid['rec'].append(recall_score(y_test, y_pred))
+        metrics_hybrid['auc_pr'].append(auc(rec, prec))
         
         fpr, tpr, _ = roc_curve(y_test, y_prob)
-        ax1.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {metrics['auc'][-1]:.3f})")
+        ax1.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {metrics_hybrid['auc'][-1]:.3f})")
         
-        print(f"  Fold {fold} AUC: {metrics['auc'][-1]:.3f}")
+        # ----------------------------------------------------------------------
+        # B. BASELINE (XGBoost on Last Values - Temporal Only)
+        # ----------------------------------------------------------------------
+        print("  [Baseline] Training Standard XGBoost (Last Values)...")
+        
+        # Extract dataframe, filter only temporal cols to match Hybrid "No Static" rule
+        # Note: We keep ID cols temporarily to pivot/group, then drop
+        def get_last_values(p_obj, feature_list):
+            df = p_obj.getMeasuresBetween(
+                pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+            )
+            # Keep only temporal features + label
+            cols_to_keep = feature_list + ["akd"]
+            # Filter available columns
+            cols_to_keep = [c for c in cols_to_keep if c in df.columns]
+            return df[cols_to_keep].fillna(0)
+
+        df_train = get_last_values(train_p_obj, temporal_feats)
+        df_test = get_last_values(test_p, temporal_feats)
+        
+        X_tr_b = df_train.drop(columns=["akd"])
+        y_tr_b = df_train["akd"]
+        X_te_b = df_test.drop(columns=["akd"])
+        y_te_b = df_test["akd"]
+        
+        xgb_base = XGBClassifier(
+            n_estimators=500, max_depth=6, learning_rate=0.05, 
+            scale_pos_weight=ratio, eval_metric='auc', random_state=42
+        )
+        xgb_base.fit(X_tr_b, y_tr_b)
+        
+        y_prob_b = xgb_base.predict_proba(X_te_b)[:, 1]
+        y_pred_b = (y_prob_b > 0.5).astype(int)
+        
+        tn, fp, _, _ = confusion_matrix(y_te_b, y_pred_b).ravel()
+        prec_b, rec_b, _ = precision_recall_curve(y_te_b, y_prob_b)
+        
+        metrics_base['auc'].append(roc_auc_score(y_te_b, y_prob_b))
+        metrics_base['acc'].append(accuracy_score(y_te_b, y_pred_b))
+        metrics_base['spec'].append(tn / (tn + fp))
+        metrics_base['prec'].append(precision_score(y_te_b, y_pred_b, zero_division=0))
+        metrics_base['rec'].append(recall_score(y_te_b, y_pred_b))
+        metrics_base['auc_pr'].append(auc(rec_b, prec_b))
+        
+        fpr_b, tpr_b, _ = roc_curve(y_te_b, y_prob_b)
+        ax2.plot(fpr_b, tpr_b, lw=2, label=f"Fold {fold} (AUC = {metrics_base['auc'][-1]:.3f})")
+        
+        print(f"  Fold {fold} -> Hybrid: {metrics_hybrid['auc'][-1]:.3f} vs Baseline: {metrics_base['auc'][-1]:.3f}")
 
     # Final Plot
-    ax1.plot([0, 1], [0, 1], linestyle="--", color="navy", lw=2)
-    ax1.set_xlim([0.0, 1.0])
-    ax1.set_ylim([0.0, 1.05])
-    ax1.legend(loc="lower right")
-    ax1.set_title("Pure Temporal Hybrid (RNN + XGB)")
+    for ax in [ax1, ax2]:
+        ax.plot([0, 1], [0, 1], linestyle="--", color="navy", lw=2)
+        ax.set_xlim([0.0, 1.0])
+        ax.set_ylim([0.0, 1.05])
+        ax.legend(loc="lower right")
+    ax1.set_title("Hybrid (TimeEmbedded RNN+XGB)")
+    ax2.set_title("Baseline (Last Value XGB)")
     plt.tight_layout()
-    plt.savefig("result/pure_temporal_hybrid.png", dpi=300)
+    plt.savefig("result/pure_temporal_comparison.png", dpi=300)
 
     # Final Stats
     print("\n" + "="*80)
     print("FINAL RESULTS SUMMARY (TEMPORAL ONLY)")
     print("="*80)
-    def print_stat(name, m):
-        print(f"{name:15s} | {np.mean(m):.4f} ± {np.std(m):.4f}")
+    
+    def print_stat(name, h_metrics, b_metrics):
+        h_mean, h_std = np.mean(h_metrics), np.std(h_metrics)
+        b_mean, b_std = np.mean(b_metrics), np.std(b_metrics)
+        print(f"{name:15s} | Hybrid: {h_mean:.4f} ± {h_std:.4f}  vs  Baseline: {b_mean:.4f} ± {b_std:.4f}")
         
-    print_stat("AUC", metrics['auc'])
-    print_stat("AUC-PR", metrics['auc_pr'])
-    print_stat("Accuracy", metrics['acc'])
-    print_stat("Specificity", metrics['spec'])
+    print_stat("AUC", metrics_hybrid['auc'], metrics_base['auc'])
+    print_stat("AUC-PR", metrics_hybrid['auc_pr'], metrics_base['auc_pr'])
+    print_stat("Accuracy", metrics_hybrid['acc'], metrics_base['acc'])
+    print_stat("Specificity", metrics_hybrid['spec'], metrics_base['spec'])
+    print_stat("Precision", metrics_hybrid['prec'], metrics_base['prec'])
+    print_stat("Recall", metrics_hybrid['rec'], metrics_base['rec'])
 
 if __name__ == "__main__":
     main()
