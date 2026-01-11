@@ -390,9 +390,9 @@ def main():
         val_ds = HybridDataset(val_p, temporal_feats, encoder, stats)
         test_ds = HybridDataset(test_p_list, temporal_feats, encoder, stats)
         
-        train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=hybrid_collate_fn)
-        val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
-        test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
+        train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, collate_fn=hybrid_collate_fn)
+        val_loader = DataLoader(val_ds, batch_size=64, shuffle=False, collate_fn=hybrid_collate_fn)
+        test_loader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=hybrid_collate_fn)
         
         # 2. Stage 1: RNN Training
         rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=48).to(DEVICE)
