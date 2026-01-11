@@ -45,9 +45,12 @@ Recall          | Hybrid: 0.7026 ± 0.0283  vs  Baseline: 0.6836 ± 0.0388
 TabX_MultiheadMimic.py
 FINAL RESULTS SUMMARY
 ================================================================================
-AUC             | Hybrid: 0.8487 ± 0.0110  vs  Baseline: 0.8607 ± 0.0181
-AUC-PR          | Hybrid: 0.7832 ± 0.0203  vs  Baseline: 0.8124 ± 0.0340
-Accuracy        | Hybrid: 0.7786 ± 0.0119  vs  Baseline: 0.7919 ± 0.0207
-Specificity     | Hybrid: 0.8538 ± 0.0216  vs  Baseline: 0.8621 ± 0.0452
-Precision       | Hybrid: 0.7469 ± 0.0241  vs  Baseline: 0.7674 ± 0.0511
-Recall          | Hybrid: 0.6624 ± 0.0281  vs  Baseline: 0.6836 ± 0.0388
+================================================================================
+FINAL RESULTS SUMMARY
+================================================================================
+AUC             | Hybrid: 0.8601 ± 0.0165  vs  Baseline: 0.8607 ± 0.0181
+AUC-PR          | Hybrid: 0.7986 ± 0.0301  vs  Baseline: 0.8124 ± 0.0340
+Accuracy        | Hybrid: 0.7935 ± 0.0160  vs  Baseline: 0.7919 ± 0.0207
+Specificity     | Hybrid: 0.8484 ± 0.0246  vs  Baseline: 0.8621 ± 0.0452
+Precision       | Hybrid: 0.7528 ± 0.0275  vs  Baseline: 0.7674 ± 0.0511
+Recall          | Hybrid: 0.7089 ± 0.0379  vs  Baseline: 0.6836 ± 0.0388
