@@ -284,9 +284,24 @@ def train_rnn_with_dpo(rnn_model, reference_rnn, train_loader, val_loader, epoch
     tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
     tabpfn.fit(ref_features, ref_labels)
 
-    print("  [Stage 2] Training RNN with DPO...")
+    print("  [Stage 2] Training RNN with DPO (distillation approach)...")
 
-    optimizer = torch.optim.Adam(rnn_model.parameters(), lr=0.0005)
+    # Create a simple differentiable head
+    feature_dim = len(train_loader.dataset.feature_names) + len(FIXED_FEATURES) + 12  # temporal + static + rnn_dim
+    simple_head = nn.Sequential(
+        nn.Linear(feature_dim, 16),
+        nn.ReLU(),
+        nn.Dropout(0.3),
+        nn.Linear(16, 1),
+        nn.Sigmoid()
+    ).to(DEVICE)
+
+    # Optimizer for both RNN and head
+    optimizer = torch.optim.Adam(
+        list(rnn_model.parameters()) + list(simple_head.parameters()),
+        lr=0.0005
+    )
+
     best_auc = 0
     best_state = None
     patience = 6
@@ -294,9 +309,10 @@ def train_rnn_with_dpo(rnn_model, reference_rnn, train_loader, val_loader, epoch
 
     for epoch in range(epochs):
         rnn_model.train()
+        simple_head.train()
         reference_rnn.eval()
 
-        epoch_dpo_loss = 0
+        epoch_loss = 0
         num_batches = 0
 
         for t_data, labels, s_data in train_loader:
@@ -313,47 +329,48 @@ def train_rnn_with_dpo(rnn_model, reference_rnn, train_loader, val_loader, epoch
                 h_ref = reference_rnn(t_data)
                 features_ref = torch.cat([last_vals, s_data, h_ref], dim=1)
 
-            # Get TabPFN predictions for both
+            # Get TabPFN predictions as "pseudo-labels"
             with torch.no_grad():
-                pred_current = tabpfn.predict_proba(features_current.cpu().numpy())[:, 1]
-                pred_ref = tabpfn.predict_proba(features_ref.cpu().numpy())[:, 1]
+                # Use TabPFN on current features to get soft targets
+                tabpfn_soft_labels = tabpfn.predict_proba(features_current.cpu().numpy())[:, 1]
+                tabpfn_soft_labels = torch.FloatTensor(tabpfn_soft_labels).to(DEVICE)
 
-                pred_current = torch.FloatTensor(pred_current).to(DEVICE)
-                pred_ref = torch.FloatTensor(pred_ref).to(DEVICE)
+            # Get prediction from simple head (differentiable)
+            head_pred = simple_head(features_current).squeeze(-1)
 
-            # DPO Loss: Prefer features that give better TabPFN predictions
-            # We want to maximize: P(current better than ref | labels)
+            # Loss 1: Match true labels (classification)
+            label_loss = F.binary_cross_entropy(head_pred, labels)
 
-            # Compute "rewards" as negative cross-entropy with true labels
-            reward_current = -(labels * torch.log(pred_current + 1e-8) +
-                              (1 - labels) * torch.log(1 - pred_current + 1e-8))
-            reward_ref = -(labels * torch.log(pred_ref + 1e-8) +
-                          (1 - labels) * torch.log(1 - pred_ref + 1e-8))
+            # Loss 2: Distill from TabPFN (mimic TabPFN's predictions)
+            distill_loss = F.mse_loss(head_pred, tabpfn_soft_labels)
 
-            # DPO Loss (simplified version)
-            # We want current to have lower loss (higher reward) than reference
-            # DPO: optimize log(sigmoid(beta * (reward_ref - reward_current)))
-            dpo_loss = -torch.mean(
-                F.logsigmoid(beta * (reward_ref - reward_current))
-            )
+            # Loss 3: Feature regularization (prevent RNN features from exploding)
+            reg_loss = 0.001 * torch.mean(h_current ** 2)
+
+            # Combined loss
+            # Heavy weight on distillation - we want RNN to learn features TabPFN prefers
+            total_loss = 0.3 * label_loss + 0.6 * distill_loss + reg_loss
 
             optimizer.zero_grad()
-            dpo_loss.backward()
+            total_loss.backward()
 
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(rnn_model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(
+                list(rnn_model.parameters()) + list(simple_head.parameters()),
+                max_norm=1.0
+            )
 
             optimizer.step()
 
-            epoch_dpo_loss += dpo_loss.item()
+            epoch_loss += total_loss.item()
             num_batches += 1
 
-        avg_dpo_loss = epoch_dpo_loss / num_batches
+        avg_loss = epoch_loss / num_batches
 
         # Validation
         if (epoch+1) % 5 == 0:
             rnn_model.eval()
-            all_preds, all_lbls = [], []
+            simple_head.eval()
 
             with torch.no_grad():
                 val_features = []
@@ -378,7 +395,7 @@ def train_rnn_with_dpo(rnn_model, reference_rnn, train_loader, val_loader, epoch
                 aupr = average_precision_score(val_labels, preds)
                 auc_score = roc_auc_score(val_labels, preds)
 
-            print(f"    Epoch {epoch+1} | DPO Loss: {avg_dpo_loss:.4f} | Val AUPR: {aupr:.4f} AUC: {auc_score:.4f}")
+            print(f"    Epoch {epoch+1} | Train Loss: {avg_loss:.4f} | Val AUPR: {aupr:.4f} AUC: {auc_score:.4f}")
 
             if aupr > best_auc:
                 best_auc = aupr
