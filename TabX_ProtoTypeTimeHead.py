@@ -1,13 +1,11 @@
 """
-TIME-ONLY MODEL: [Learned Trend + Last Value] -> TabPFN
+TIME-TRAINED RNN MODEL: [Static + Last Value + RNN Learned] -> TabPFN
 vs
-BASELINE: [Last Value] -> TabPFN
+BASELINE: [Static + Last Value] -> TabPFN
 
-Features:
-- RNN Feature Extraction (Time Series Only)
-- NO Static Features
-- Dual Feature Concatenation (RNN + Last Value)
-- Full Metrics & Plots
+Key Difference:
+- RNN is trained ONLY on time series data (no static features during training)
+- But TabPFN receives [Static + Last + RNN] for fair comparison with baseline [Static + Last]
 """
 
 import pandas as pd
@@ -62,8 +60,57 @@ from TimeEmbeddingVal import (
 )
 from TimeEmbedding import DEVICE, TimeEmbeddedRNNCell
 
+# Static features list
+FIXED_FEATURES = [
+    "age", "gender", "race", "chronic_pulmonary_disease", "ckd_stage",
+    "congestive_heart_failure", "dka_type", "history_aci", "history_ami",
+    "hypertension", "liver_disease", "macroangiopathy", "malignant_cancer",
+    "microangiopathy", "uti", "oasis", "saps2", "sofa",
+    "mechanical_ventilation", "use_NaHCO3", "preiculos", "gcs_unable"
+]
+
 # ==============================================================================
-# 1. Multi-Prototype Metric Head
+# 1. Helpers: Encoder
+# ==============================================================================
+
+class SimpleStaticEncoder:
+    """Encodes categorical static features (e.g. Gender 'F'->1)"""
+    def __init__(self, features):
+        self.features = features
+        self.mappings = {f: {} for f in features}
+        self.counts = {f: 0 for f in features}
+
+    def fit(self, patients):
+        for p in patients:
+            for f in self.features:
+                val = p.measures.get(f, 0.0)
+                if hasattr(val, 'values') and len(val) > 0: val = list(val.values())[0]
+                elif hasattr(val, 'values'): val = 0.0
+
+                val_str = str(val)
+                try:
+                    float(val)
+                except ValueError:
+                    if val_str not in self.mappings[f]:
+                        self.mappings[f][val_str] = float(self.counts[f])
+                        self.counts[f] += 1
+
+    def transform(self, patient):
+        vec = []
+        for f in self.features:
+            val = patient.measures.get(f, 0.0)
+            if hasattr(val, 'values') and len(val) > 0: val = list(val.values())[0]
+            elif hasattr(val, 'values'): val = 0.0
+
+            try:
+                numeric_val = float(val)
+            except ValueError:
+                numeric_val = self.mappings[f].get(str(val), -1.0)
+            vec.append(numeric_val)
+        return vec
+
+# ==============================================================================
+# 2. Multi-Prototype Metric Head
 # ==============================================================================
 
 class MultiProtoMetricHead(nn.Module):
@@ -104,13 +151,14 @@ class MultiProtoMetricHead(nn.Module):
         return torch.sigmoid(dist_1 - dist_0)
 
 # ==============================================================================
-# 2. Time-Only Dataset (NO Static Features)
+# 3. Dataset (Returns Temporal, Label, AND Static separately)
 # ==============================================================================
 
-class TimeOnlyDataset(Dataset):
-    def __init__(self, patients, feature_names, normalization_stats=None):
+class HybridDataset(Dataset):
+    def __init__(self, patients, feature_names, static_encoder, normalization_stats=None):
         self.data = []
         self.labels = []
+        self.static_data = []
         self.feature_names = feature_names
 
         all_values = []
@@ -121,6 +169,10 @@ class TimeOnlyDataset(Dataset):
             times, values, masks = extract_temporal_data(patient, feature_names)
             if times is None: continue
 
+            # Encode Static Features
+            s_vec = static_encoder.transform(patient)
+
+            self.static_data.append(torch.tensor(s_vec, dtype=torch.float32))
             self.data.append({'times': times, 'values': values, 'masks': masks})
             self.labels.append(1 if patient.akdPositive else 0)
 
@@ -155,10 +207,10 @@ class TimeOnlyDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        return self.data[idx], self.labels[idx]
+        return self.data[idx], self.labels[idx], self.static_data[idx]
 
-def time_only_collate_fn(batch):
-    data_list, label_list = zip(*batch)
+def hybrid_collate_fn(batch):
+    data_list, label_list, static_list = zip(*batch)
     lengths = [len(d['times']) for d in data_list]
     max_len = max(lengths)
     feat_dim = data_list[0]['values'].shape[-1]
@@ -178,10 +230,10 @@ def time_only_collate_fn(batch):
         'times': padded_times, 'values': padded_values,
         'masks': padded_masks, 'lengths': torch.tensor(lengths)
     }
-    return temporal_batch, torch.tensor(label_list, dtype=torch.float32)
+    return temporal_batch, torch.tensor(label_list, dtype=torch.float32), torch.stack(static_list)
 
 # ==============================================================================
-# 3. RNN Model & Pre-training (Time-Only)
+# 4. RNN Model & Pre-training (Time Data Only, NO Static)
 # ==============================================================================
 
 class RNNFeatureExtractor(nn.Module):
@@ -199,7 +251,7 @@ class RNNFeatureExtractor(nn.Module):
 def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, epochs=50):
     rnn_dim = model.rnn_cell.hidden_dim
 
-    # Pre-train using RNN ONLY (no static features)
+    # Pre-train using RNN ONLY (no static features during RNN training)
     temp_head = MultiProtoMetricHead(
         input_dim=rnn_dim,
         hidden_dim=64,
@@ -212,14 +264,14 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
     patience = 6
     counter = 0
 
-    print("  [Stage 1] Pre-training RNN with Time Data Only...")
+    print("  [Stage 1] Pre-training RNN with Time Data Only (NO Static)...")
     for epoch in range(epochs):
         model.train()
         temp_head.train()
 
-        for t_data, labels in train_loader:
+        for t_data, labels, s_data in train_loader:  # We receive static but don't use it
             labels = labels.to(DEVICE)
-            h = model(t_data)
+            h = model(t_data)  # Only use time data
             preds = temp_head(h).squeeze(-1)
             loss = criterion(preds, labels)
             full_optimizer.zero_grad()
@@ -231,8 +283,8 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
             temp_head.eval()
             all_preds, all_lbls = [], []
             with torch.no_grad():
-                for t_data, labels in val_loader:
-                    h = model(t_data)
+                for t_data, labels, s_data in val_loader:
+                    h = model(t_data)  # Only use time data
                     preds = temp_head(h).squeeze(-1)
                     all_preds.extend(preds.cpu().numpy())
                     all_lbls.extend(labels.cpu().numpy())
@@ -254,21 +306,24 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
     return model
 
 # ==============================================================================
-# 4. Dual Feature Extraction (RNN + Last Value, NO Static)
+# 5. Triple Feature Extraction (Last Value + Static + RNN)
 # ==============================================================================
 
-def get_dual_features(model, loader):
-    """Returns [RNN_Embedding + Last_Value] - NO STATIC FEATURES"""
+def get_triple_features(model, loader):
+    """Returns [Last_Value (25) + Static (23) + RNN_Embedding (128)]"""
     model.eval()
     features = []
     labels_out = []
 
     with torch.no_grad():
-        for t_data, labels in loader:
-            # 1. Get RNN Embedding
+        for t_data, labels, s_data in loader:
+            # 1. Get RNN Embedding (trained on time only)
             h = model(t_data).cpu().numpy()
 
-            # 2. Extract "Last Values" manually
+            # 2. Get Static Features
+            s = s_data.numpy()
+
+            # 3. Extract "Last Values" manually
             vals = t_data['values'].cpu().numpy()
             masks = t_data['masks'].cpu().numpy()
 
@@ -289,8 +344,8 @@ def get_dual_features(model, loader):
 
             last_vals_arr = np.array(batch_last_vals)
 
-            # 3. DUAL CONCATENATION (RNN + Last Value only)
-            combined = np.hstack([last_vals_arr, h])
+            # 4. TRIPLE CONCATENATION: [Last + Static + RNN]
+            combined = np.hstack([last_vals_arr, s, h])
 
             features.append(combined)
             labels_out.extend(labels.numpy())
@@ -298,22 +353,27 @@ def get_dual_features(model, loader):
     return np.vstack(features), np.array(labels_out)
 
 # ==============================================================================
-# 5. Main Execution
+# 6. Main Execution
 # ==============================================================================
 
 def main():
     print("="*80)
-    print("TIME-ONLY MODEL (RNN + Last Value) vs BASELINE (Last Value Only)")
+    print("TIME-TRAINED RNN (Last+Static+RNN) vs BASELINE (Last+Static)")
     print("="*80)
 
     patients = load_and_prepare_patients()
     temporal_feats = get_all_temporal_features(patients)
 
-    print(f"Input: {len(temporal_feats)} Temporal Features (NO Static Features)")
+    print("Encoding static features...")
+    encoder = SimpleStaticEncoder(FIXED_FEATURES)
+    encoder.fit(patients.patientList)
 
-    # Store metrics for Time Model
-    metrics_time = {k: [] for k in ['auc', 'acc', 'spec', 'prec', 'rec', 'auc_pr']}
-    # Store metrics for Baseline
+    print(f"Input: {len(temporal_feats)} Temporal + {len(FIXED_FEATURES)} Static Features")
+    print("RNN Training: Time Data Only (NO Static)")
+    print("TabPFN Input: [Last Values + Static + RNN Learned Features]")
+
+    # Store metrics
+    metrics_hybrid = {k: [] for k in ['auc', 'acc', 'spec', 'prec', 'rec', 'auc_pr']}
     metrics_base = {k: [] for k in ['auc', 'acc', 'spec', 'prec', 'rec', 'auc_pr']}
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
@@ -323,52 +383,52 @@ def main():
         train_p_obj, val_p_obj = split_patients_train_val(train_full, val_ratio=0.1, seed=42+fold)
         train_p, val_p, test_p_list = train_p_obj.patientList, val_p_obj.patientList, test_p.patientList
 
-        # 1. Time-Only Data Setup
-        train_ds = TimeOnlyDataset(train_p, temporal_feats)
+        # 1. Hybrid Data Setup
+        train_ds = HybridDataset(train_p, temporal_feats, encoder)
         stats = train_ds.get_normalization_stats()
-        val_ds = TimeOnlyDataset(val_p, temporal_feats, stats)
-        test_ds = TimeOnlyDataset(test_p_list, temporal_feats, stats)
+        val_ds = HybridDataset(val_p, temporal_feats, encoder, stats)
+        test_ds = HybridDataset(test_p_list, temporal_feats, encoder, stats)
 
-        train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, collate_fn=time_only_collate_fn)
-        val_loader = DataLoader(val_ds, batch_size=64, shuffle=False, collate_fn=time_only_collate_fn)
-        test_loader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=time_only_collate_fn)
+        train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, collate_fn=hybrid_collate_fn)
+        val_loader = DataLoader(val_ds, batch_size=64, shuffle=False, collate_fn=hybrid_collate_fn)
+        test_loader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=hybrid_collate_fn)
 
-        # 2. Stage 1: RNN Training
+        # 2. Stage 1: RNN Training (Time Only)
         rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=12).to(DEVICE)
         opt = torch.optim.Adam(rnn.parameters(), lr=0.0005)
         rnn = train_rnn_extractor(rnn, train_loader, val_loader, nn.BCELoss(), opt, epochs=100)
 
-        # 3. Stage 2: Dual Feature Fusion (RNN + Last Value)
-        print("  [Stage 2] Extracting Dual Features (RNN + Last Value)...")
-        X_train, y_train = get_dual_features(rnn, train_loader)
-        X_val, y_val = get_dual_features(rnn, val_loader)
-        X_test, y_test = get_dual_features(rnn, test_loader)
+        # 3. Stage 2: Triple Feature Fusion
+        print("  [Stage 2] Extracting Triple Features (Last + Static + RNN)...")
+        X_train, y_train = get_triple_features(rnn, train_loader)
+        X_val, y_val = get_triple_features(rnn, val_loader)
+        X_test, y_test = get_triple_features(rnn, test_loader)
 
         # 4. Stage 3: TabPFN Training
         clf = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
         clf.fit(X_train, y_train)
 
-        # 5. Time Model Evaluation
+        # 5. Hybrid Evaluation
         y_prob = clf.predict_proba(X_test)[:, 1]
         y_pred = (y_prob > 0.5).astype(int)
 
         tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
         prec, rec, _ = precision_recall_curve(y_test, y_prob)
 
-        metrics_time['auc'].append(roc_auc_score(y_test, y_prob))
-        metrics_time['acc'].append(accuracy_score(y_test, y_pred))
-        metrics_time['spec'].append(tn / (tn + fp))
-        metrics_time['prec'].append(precision_score(y_test, y_pred, zero_division=0))
-        metrics_time['rec'].append(recall_score(y_test, y_pred))
-        metrics_time['auc_pr'].append(auc(rec, prec))
+        metrics_hybrid['auc'].append(roc_auc_score(y_test, y_prob))
+        metrics_hybrid['acc'].append(accuracy_score(y_test, y_pred))
+        metrics_hybrid['spec'].append(tn / (tn + fp))
+        metrics_hybrid['prec'].append(precision_score(y_test, y_pred, zero_division=0))
+        metrics_hybrid['rec'].append(recall_score(y_test, y_pred))
+        metrics_hybrid['auc_pr'].append(auc(rec, prec))
 
         fpr, tpr, _ = roc_curve(y_test, y_prob)
-        ax1.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {metrics_time['auc'][-1]:.3f})")
+        ax1.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {metrics_hybrid['auc'][-1]:.3f})")
 
         # ======================================================================
-        # BASELINE: Last Values Only (NO RNN, NO Static)
+        # BASELINE: [Last Values + Static] -> TabPFN
         # ======================================================================
-        print("  [Baseline] Training TabPFN with Last Values Only...")
+        print("  [Baseline] Training TabPFN with (Last + Static)...")
 
         # Extract "Last Values"
         df_train_temp = train_p_obj.getMeasuresBetween(
@@ -382,12 +442,9 @@ def main():
         df_train_enc, df_val_enc, _ = encodeCategoricalData(df_train_temp, df_val_temp)
         df_train_enc, df_test_enc, _ = encodeCategoricalData(df_train_temp, df_test_temp)
 
-        # Keep only temporal features (remove static features from baseline too)
-        temporal_cols = [col for col in df_train_enc.columns if col in temporal_feats or col == 'akd']
-
-        X_tr_b = df_train_enc[temporal_cols].drop(columns=["akd"]).fillna(0)
+        X_tr_b = df_train_enc.drop(columns=["akd"]).fillna(0)
         y_tr_b = df_train_enc["akd"]
-        X_te_b = df_test_enc[temporal_cols].drop(columns=["akd"]).fillna(0)
+        X_te_b = df_test_enc.drop(columns=["akd"]).fillna(0)
         y_te_b = df_test_enc["akd"]
 
         model_base = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
@@ -409,7 +466,7 @@ def main():
         fpr_b, tpr_b, _ = roc_curve(y_te_b, y_prob_b)
         ax2.plot(fpr_b, tpr_b, lw=2, label=f"Fold {fold} (AUC = {metrics_base['auc'][-1]:.3f})")
 
-        print(f"  Fold {fold} Results -> Time Model: {metrics_time['auc_pr'][-1]:.3f} vs Baseline: {metrics_base['auc_pr'][-1]:.3f}")
+        print(f"  Fold {fold} Results -> Time-RNN: {metrics_hybrid['auc_pr'][-1]:.3f} vs Baseline: {metrics_base['auc_pr'][-1]:.3f}")
 
     # Final Plot Config
     for ax in [ax1, ax2]:
@@ -417,28 +474,28 @@ def main():
         ax.set_xlim([0.0, 1.0])
         ax.set_ylim([0.0, 1.05])
         ax.legend(loc="lower right")
-    ax1.set_title("Time Model (RNN+Last Value)")
-    ax2.set_title("Baseline (Last Value Only)")
+    ax1.set_title("Time-RNN (Last+Static+RNN)")
+    ax2.set_title("Baseline (Last+Static)")
     plt.tight_layout()
-    plt.savefig("result/time_only_vs_baseline.png", dpi=300)
-    print("\nPlot saved to result/time_only_vs_baseline.png")
+    plt.savefig("result/time_rnn_vs_baseline.png", dpi=300)
+    print("\nPlot saved to result/time_rnn_vs_baseline.png")
 
     # Final Stats
     print("\n" + "="*80)
     print("FINAL RESULTS SUMMARY")
     print("="*80)
 
-    def print_stat(name, t_metrics, b_metrics):
-        t_mean, t_std = np.mean(t_metrics), np.std(t_metrics)
+    def print_stat(name, h_metrics, b_metrics):
+        h_mean, h_std = np.mean(h_metrics), np.std(h_metrics)
         b_mean, b_std = np.mean(b_metrics), np.std(b_metrics)
-        print(f"{name:15s} | Time Model: {t_mean:.4f} ± {t_std:.4f}  vs  Baseline: {b_mean:.4f} ± {b_std:.4f}")
+        print(f"{name:15s} | Time-RNN: {h_mean:.4f} ± {h_std:.4f}  vs  Baseline: {b_mean:.4f} ± {b_std:.4f}")
 
-    print_stat("AUC", metrics_time['auc'], metrics_base['auc'])
-    print_stat("AUC-PR", metrics_time['auc_pr'], metrics_base['auc_pr'])
-    print_stat("Accuracy", metrics_time['acc'], metrics_base['acc'])
-    print_stat("Specificity", metrics_time['spec'], metrics_base['spec'])
-    print_stat("Precision", metrics_time['prec'], metrics_base['prec'])
-    print_stat("Recall", metrics_time['rec'], metrics_base['rec'])
+    print_stat("AUC", metrics_hybrid['auc'], metrics_base['auc'])
+    print_stat("AUC-PR", metrics_hybrid['auc_pr'], metrics_base['auc_pr'])
+    print_stat("Accuracy", metrics_hybrid['acc'], metrics_base['acc'])
+    print_stat("Specificity", metrics_hybrid['spec'], metrics_base['spec'])
+    print_stat("Precision", metrics_hybrid['prec'], metrics_base['prec'])
+    print_stat("Recall", metrics_hybrid['rec'], metrics_base['rec'])
 
 if __name__ == "__main__":
     main()
