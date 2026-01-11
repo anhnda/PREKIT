@@ -110,7 +110,7 @@ class SimpleStaticEncoder:
 
 class GatedDecisionHead(nn.Module):
     """Mimics Tree logic for RNN pre-training"""
-    def __init__(self, input_dim, hidden_dim=32, dropout=0.3):
+    def __init__(self, input_dim, hidden_dim=64, dropout=0.3):
         super(GatedDecisionHead, self).__init__()
         self.gate = nn.Sequential(nn.Linear(input_dim, input_dim), nn.Sigmoid())
         self.fc1 = nn.Linear(input_dim, hidden_dim * 2) 
