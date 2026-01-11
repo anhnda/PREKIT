@@ -341,8 +341,7 @@ def main():
         X_test, y_test = get_triple_features(rnn, test_loader)
         
         # 4. TabPFN (Hybrid)
-        # N_ensemble_configurations handles subsampling if N > 1024
-        clf = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=32)
+        clf = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
         
         # Subsample for training if too large (TabPFN limit is typically ~2k-10k)
         MAX_TABPFN_SAMPLES = 2048 
@@ -381,7 +380,7 @@ def main():
         X_tr_b_fit = X_tr_b[indices] if len(X_train) > MAX_TABPFN_SAMPLES else X_tr_b
         y_tr_b_fit = y_train[indices] if len(X_train) > MAX_TABPFN_SAMPLES else y_train
             
-        clf_base = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=32)
+        clf_base = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
         clf_base.fit(X_tr_b_fit, y_tr_b_fit)
         
         y_prob_b = clf_base.predict_proba(X_te_b)[:, 1]
