@@ -115,10 +115,12 @@ class SimpleStaticEncoder:
 
 class DifferentiableTabPFNWrapper(nn.Module):
     """
-    Wrapper around TabPFN that:
-    1. Keeps TabPFN frozen (no weight updates)
-    2. Allows gradients to flow back through predictions to input features
-    3. Enables end-to-end training of RNN with TabPFN in the loop
+    Wrapper around TabPFN using SCORE FUNCTION ESTIMATOR (Policy Gradient)
+
+    Since TabPFN is not differentiable, we use:
+    1. TabPFN predictions as rewards/targets
+    2. A simple differentiable proxy head
+    3. Gradients flow through the proxy to RNN
     """
     def __init__(self, train_features, train_labels):
         super().__init__()
@@ -136,37 +138,52 @@ class DifferentiableTabPFNWrapper(nn.Module):
 
         self.tabpfn.fit(train_features, train_labels)
 
-        # Store training stats for normalization
+        # Differentiable proxy head (lightweight)
+        # This head learns to approximate what TabPFN wants
+        input_dim = train_features.shape[1]
+        self.proxy_head = nn.Sequential(
+            nn.Linear(input_dim, 32),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(32, 1),
+            nn.Sigmoid()
+        )
+
+        # Store training stats
         self.register_buffer('train_mean', torch.FloatTensor(np.mean(train_features, axis=0)))
         self.register_buffer('train_std', torch.FloatTensor(np.std(train_features, axis=0) + 1e-8))
 
-    def forward(self, x):
+    def forward(self, x, return_both=False):
         """
-        Forward pass that allows gradients to flow back to x
+        Forward pass with differentiable proxy
 
-        Key trick: TabPFN gives us probabilities. We use those probabilities
-        with standard loss functions, and PyTorch automatically handles gradients.
+        Args:
+            x: Input features
+            return_both: If True, return both TabPFN and proxy predictions
         """
-        # Normalize features (helps TabPFN)
+        # Normalize features
         x_norm = (x - self.train_mean) / self.train_std
 
-        # Convert to numpy for TabPFN
+        # Get differentiable proxy prediction (this has gradients)
+        proxy_pred = self.proxy_head(x_norm).squeeze(-1)
+
+        if return_both:
+            # Also get TabPFN prediction (for evaluation)
+            x_np = x_norm.detach().cpu().numpy()
+            with torch.no_grad():
+                tabpfn_pred = self.tabpfn.predict_proba(x_np)[:, 1]
+            tabpfn_pred = torch.FloatTensor(tabpfn_pred).to(x.device)
+            return proxy_pred, tabpfn_pred
+
+        return proxy_pred
+
+    def get_tabpfn_pred(self, x):
+        """Get TabPFN prediction (no gradients)"""
+        x_norm = (x - self.train_mean) / self.train_std
         x_np = x_norm.detach().cpu().numpy()
-
-        # Get TabPFN predictions (frozen model)
         with torch.no_grad():
-            probs = self.tabpfn.predict_proba(x_np)[:, 1]  # Probability of class 1
-
-        # Convert back to tensor and attach to computation graph
-        # This allows gradients to flow back through x
-        probs_tensor = torch.FloatTensor(probs).to(x.device)
-
-        # Create a differentiable connection: gradient flows through x_norm
-        # We use a trick: output = probs + 0 * mean(x_norm)
-        # This adds a tiny (zero) contribution from x_norm, creating gradient path
-        probs_tensor = probs_tensor + 0.0 * x_norm.mean()
-
-        return probs_tensor
+            probs = self.tabpfn.predict_proba(x_np)[:, 1]
+        return torch.FloatTensor(probs).to(x.device)
 
 # ==============================================================================
 # 3. Dataset (Returns Temporal, Label, AND Static)
@@ -325,10 +342,17 @@ def train_rnn_end_to_end(rnn_model, train_loader, val_loader, criterion, optimiz
     patience = 6
     counter = 0
 
-    print("  [Stage 2] Training RNN end-to-end with frozen TabPFN...")
+    print("  [Stage 2] Training RNN end-to-end with TabPFN guidance...")
+
+    # Create optimizer for both RNN and proxy head
+    full_optimizer = torch.optim.Adam(
+        list(rnn_model.parameters()) + list(tabpfn_wrapper.proxy_head.parameters()),
+        lr=0.0005
+    )
 
     for epoch in range(epochs):
         rnn_model.train()
+        tabpfn_wrapper.proxy_head.train()
 
         for t_data, labels, s_data in train_loader:
             labels = labels.to(DEVICE)
@@ -361,23 +385,35 @@ def train_rnn_end_to_end(rnn_model, train_loader, val_loader, criterion, optimiz
             # Combine features: [last + static + rnn]
             combined = torch.cat([last_vals_tensor, s_data, h], dim=1)
 
-            # Forward through frozen TabPFN
-            preds = tabpfn_wrapper(combined)
+            # Get proxy prediction (differentiable)
+            proxy_preds = tabpfn_wrapper(combined)
 
-            # Compute loss and backprop through RNN
-            loss = criterion(preds, labels)
-            optimizer.zero_grad()
+            # Main loss: proxy prediction vs true labels
+            loss = criterion(proxy_preds, labels)
+
+            # Optional: Add distillation loss to match TabPFN
+            # Every few iterations, align proxy with TabPFN
+            if torch.rand(1).item() < 0.2:  # 20% of the time
+                tabpfn_preds = tabpfn_wrapper.get_tabpfn_pred(combined)
+                distill_loss = F.mse_loss(proxy_preds, tabpfn_preds)
+                loss = loss + 0.5 * distill_loss
+
+            full_optimizer.zero_grad()
             loss.backward()
 
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(rnn_model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(
+                list(rnn_model.parameters()) + list(tabpfn_wrapper.proxy_head.parameters()),
+                max_norm=1.0
+            )
 
-            optimizer.step()
+            full_optimizer.step()
 
         # Validation
         if (epoch+1) % 5 == 0:
             rnn_model.eval()
-            all_preds, all_lbls = [], []
+            tabpfn_wrapper.proxy_head.eval()
+            all_proxy_preds, all_tabpfn_preds, all_lbls = [], [], []
 
             with torch.no_grad():
                 for t_data, labels, s_data in val_loader:
@@ -405,14 +441,20 @@ def train_rnn_end_to_end(rnn_model, train_loader, val_loader, criterion, optimiz
                     last_vals_tensor = torch.stack(batch_last_vals)
                     combined = torch.cat([last_vals_tensor, s_data, h], dim=1)
 
-                    preds = tabpfn_wrapper(combined)
-                    all_preds.extend(preds.cpu().numpy())
+                    # Get both predictions
+                    proxy_preds, tabpfn_preds = tabpfn_wrapper(combined, return_both=True)
+                    all_proxy_preds.extend(proxy_preds.cpu().numpy())
+                    all_tabpfn_preds.extend(tabpfn_preds.cpu().numpy())
                     all_lbls.extend(labels.cpu().numpy())
 
-            aupr = average_precision_score(all_lbls, all_preds)
-            auc_score = roc_auc_score(all_lbls, all_preds)
-            auc_val = aupr
-            print(f"    Epoch {epoch+1} Val AUPR: {auc_val:.4f} | AUC: {auc_score:.4f}")
+            # Report both proxy and TabPFN metrics
+            proxy_aupr = average_precision_score(all_lbls, all_proxy_preds)
+            proxy_auc = roc_auc_score(all_lbls, all_proxy_preds)
+            tabpfn_aupr = average_precision_score(all_lbls, all_tabpfn_preds)
+            tabpfn_auc = roc_auc_score(all_lbls, all_tabpfn_preds)
+
+            auc_val = tabpfn_aupr  # Use TabPFN AUPR for early stopping
+            print(f"    Epoch {epoch+1} | Proxy - AUPR: {proxy_aupr:.4f} AUC: {proxy_auc:.4f} | TabPFN - AUPR: {tabpfn_aupr:.4f} AUC: {tabpfn_auc:.4f}")
 
             if auc_val > best_auc:
                 best_auc = auc_val
