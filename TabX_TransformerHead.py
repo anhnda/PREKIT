@@ -109,53 +109,46 @@ class SimpleStaticEncoder:
         return vec
 
 class TabPFNMimicHead(nn.Module):
-    """
-    Mimics TabPFN's 'In-Context' logic using Cross-Sample Attention.
-    Updated to use batch_first=True to silence PyTorch warnings.
-    """
     def __init__(self, input_dim, hidden_dim=64, num_heads=4, dropout=0.3):
         super(TabPFNMimicHead, self).__init__()
         
         self.project = nn.Linear(input_dim, hidden_dim)
         self.act = nn.GELU()
         
-        # FIX: Set batch_first=True to enable fast path and silence warnings
+        # 1. ADD LAYERNORM HERE
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim, 
             nhead=num_heads, 
             dim_feedforward=hidden_dim*2, 
             dropout=dropout,
             activation="gelu",
-            batch_first=True 
+            batch_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=1)
+        
+        # 2. ADD LAYERNORM HERE
+        self.norm2 = nn.LayerNorm(hidden_dim)
         
         self.final = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
-        # x shape: [Actual_Batch_Size, Input_Dim]
+        # Project & Norm
+        x_emb = self.norm1(self.act(self.project(x)))
         
-        # 1. Project
-        x_emb = self.act(self.project(x)) # [Actual_Batch_Size, Hidden_Dim]
+        # Reshape: [Batch, Seq, Feat] -> [1, Batch, Feat]
+        x_seq = x_emb.unsqueeze(0)
         
-        # 2. Reshape for Cross-Sample Attention
-        # With batch_first=True, Transformer expects: [Batch, Seq_Len, Features]
-        # We want the transformer to mix information across our patients.
-        # So we treat our Actual_Batch_Size as the Sequence Length.
-        # Transformer Batch Size becomes 1.
-        # New Shape: [1, Actual_Batch_Size, Hidden_Dim]
-        x_seq = x_emb.unsqueeze(0) 
-        
-        # 3. Apply Attention
+        # Attention
         x_ctx = self.transformer(x_seq)
         
-        # 4. Squeeze back to [Actual_Batch_Size, Hidden_Dim]
-        x_ctx = x_ctx.squeeze(0)
+        # Squeeze & Norm
+        x_ctx = self.norm2(x_ctx.squeeze(0))
         
         # Residual + Final
         x_out = x_ctx + x_emb
         return torch.sigmoid(self.final(x_out))
-
 # ==============================================================================
 # 2. Dataset (Returns Temporal, Label, AND Static)
 # ==============================================================================
