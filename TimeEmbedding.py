@@ -504,7 +504,7 @@ def main():
         ).to(DEVICE)
 
         criterion = nn.BCELoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
         # Train
         print("\nTraining...")
