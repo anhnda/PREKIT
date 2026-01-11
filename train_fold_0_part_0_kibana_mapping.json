@@ -1,0 +1,149 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "index": {
+      "mapping": {
+        "total_fields": {
+          "limit": 2000
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "@timestamp": {
+        "type": "date"
+      },
+      "timestamp": {
+        "type": "date"
+      },
+      "admission_timestamp": {
+        "type": "date"
+      },
+      "subject_id": {
+        "type": "long"
+      },
+      "hadm_id": {
+        "type": "long"
+      },
+      "stay_id": {
+        "type": "long"
+      },
+      "measurement_type": {
+        "type": "keyword"
+      },
+      "measurement_category": {
+        "type": "keyword"
+      },
+      "value": {
+        "type": "double"
+      },
+      "numeric_value": {
+        "type": "double"
+      },
+      "unit": {
+        "type": "keyword"
+      },
+      "age": {
+        "type": "integer"
+      },
+      "gender": {
+        "type": "keyword"
+      },
+      "race": {
+        "type": "keyword"
+      },
+      "akdPositive": {
+        "type": "boolean"
+      },
+      "akdTime": {
+        "type": "double"
+      },
+      "hypertension": {
+        "type": "boolean"
+      },
+      "congestive_heart_failure": {
+        "type": "boolean"
+      },
+      "chronic_pulmonary_disease": {
+        "type": "boolean"
+      },
+      "malignant_cancer": {
+        "type": "boolean"
+      },
+      "liver_disease": {
+        "type": "keyword"
+      },
+      "ckd_stage": {
+        "type": "integer"
+      },
+      "dka_type": {
+        "type": "integer"
+      },
+      "egfr": {
+        "type": "double"
+      },
+      "oasis": {
+        "type": "double"
+      },
+      "saps2": {
+        "type": "integer"
+      },
+      "sofa": {
+        "type": "integer"
+      },
+      "chloride": {
+        "type": "double"
+      },
+      "hematocrit": {
+        "type": "double"
+      },
+      "history_aci": {
+        "type": "integer"
+      },
+      "history_ami": {
+        "type": "integer"
+      },
+      "macroangiopathy": {
+        "type": "integer"
+      },
+      "mch": {
+        "type": "double"
+      },
+      "mchc": {
+        "type": "double"
+      },
+      "mcv": {
+        "type": "double"
+      },
+      "mechanical_ventilation": {
+        "type": "integer"
+      },
+      "microangiopathy": {
+        "type": "integer"
+      },
+      "potassium": {
+        "type": "double"
+      },
+      "preiculos": {
+        "type": "double"
+      },
+      "rbc": {
+        "type": "double"
+      },
+      "rdw": {
+        "type": "double"
+      },
+      "sodium": {
+        "type": "double"
+      },
+      "use_NaHCO3": {
+        "type": "integer"
+      },
+      "uti": {
+        "type": "integer"
+      }
+    }
+  }
+}
