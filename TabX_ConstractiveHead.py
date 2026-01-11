@@ -255,44 +255,76 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
     rnn_dim = model.rnn_cell.hidden_dim
     static_dim = len(FIXED_FEATURES)
     
-    # Pre-train using [RNN + Static] -> TabPFNMimic
+    # Initialize the Contrastive Head
     temp_head = ContrastiveProtoHead(
         input_dim=rnn_dim + static_dim, 
         hidden_dim=64,
         num_prototypes=3 
     ).to(DEVICE)
     
-    full_optimizer = torch.optim.Adam(list(model.parameters()) + list(temp_head.parameters()), lr=0.0005)
+    full_optimizer = torch.optim.Adam(list(model.parameters()) + list(temp_head.parameters()), lr=0.001)
+    
+    best_auc = 0
     best_state = None
     patience = 6
     counter = 0
     
-    print("  [Stage 1] Pre-training RNN with TabPFNMimic...")
+    print("  [Stage 1] Pre-training with Contrastive Margin...")
     for epoch in range(epochs):
         model.train()
-        temp_head.train()
+        temp_head.train() # This sets self.training = True (Returns Tuple)
         
         for t_data, labels, s_data in train_loader: 
-            labels = labels.to(DEVICE)
+            labels = labels.to(DEVICE).unsqueeze(1) # Ensure [Batch, 1]
             s_data = s_data.to(DEVICE)
+            
             h = model(t_data)
             combined = torch.cat([h, s_data], dim=1)
-            preds = temp_head(combined).squeeze(-1)
-            loss = criterion(preds, labels)
+            
+            # --- FIX: UNPACK THE TUPLE ---
+            # The head returns 4 values in training mode
+            preds, emb, p0, p1 = temp_head(combined) 
+            
+            # loss_bce expects preds to be [Batch, 1] or [Batch]
+            # Since we didn't squeeze yet, preds is likely [Batch, 1].
+            loss_bce = criterion(preds, labels)
+            
+            # --- Contrastive Margin Logic ---
+            # 1. Similarity to Healthy Prototypes (Class 0)
+            sim_to_healthy = torch.matmul(emb, p0.detach().T).max(dim=1)[0]
+            
+            # 2. Similarity to Sick Prototypes (Class 1)
+            sim_to_sick = torch.matmul(emb, p1.detach().T).max(dim=1)[0]
+            
+            # 3. Select "Bad Similarity" based on True Label
+            # If Label=1 (Sick), bad_sim is distance to Healthy.
+            # If Label=0 (Healthy), bad_sim is distance to Sick.
+            bad_sim = torch.where(labels.squeeze(1)==1, sim_to_healthy, sim_to_sick)
+            
+            # 4. Penalty: If bad_sim > 0.2, penalize it.
+            loss_margin = torch.mean(F.relu(bad_sim - 0.2))
+            
+            total_loss = loss_bce + (0.5 * loss_margin)
+            
             full_optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             full_optimizer.step()
             
         if (epoch+1) % 5 == 0:
             model.eval()
-            temp_head.eval()
+            temp_head.eval() # This sets self.training = False (Returns ONLY Preds)
+            
             all_preds, all_lbls = [], []
             with torch.no_grad():
                 for t_data, labels, s_data in val_loader:
                     s_data = s_data.to(DEVICE)
                     h = model(t_data)
                     combined = torch.cat([h, s_data], dim=1)
+                    
+                    # --- FIX: NO UNPACKING HERE ---
+                    # In eval mode, it returns just the predictions
                     preds = temp_head(combined).squeeze(-1)
+                    
                     all_preds.extend(preds.cpu().numpy())
                     all_lbls.extend(labels.cpu().numpy())
             
