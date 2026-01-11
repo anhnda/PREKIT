@@ -383,7 +383,7 @@ def main():
         X_train_init, y_train_init = get_triple_features(rnn_policy, train_loader, deterministic=False)
         
         # Low config for training speed
-        tabpfn_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=2) 
+        tabpfn_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu') 
         tabpfn_env.fit(X_train_init, y_train_init)
 
         # Train Cycles
@@ -399,7 +399,7 @@ def main():
 
         # Final RL Eval (High config)
         print("  [Final] Evaluating RL Agent...")
-        final_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=32)
+        final_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
         X_train_final, y_train_final = get_triple_features(rnn_policy, train_loader, deterministic=True)
         X_test_final, y_test_final = get_triple_features(rnn_policy, test_loader, deterministic=True)
         
@@ -437,7 +437,7 @@ def main():
         X_te_b = df_test_enc.drop(columns=["akd"]).fillna(0)
         y_te_b = df_test_enc["akd"]
 
-        base_pfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=32)
+        base_pfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
         base_pfn.fit(X_tr_b, y_tr_b)
         y_prob_b = base_pfn.predict_proba(X_te_b)[:, 1]
         
