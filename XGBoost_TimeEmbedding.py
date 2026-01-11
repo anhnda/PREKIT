@@ -36,12 +36,16 @@ from utils.prepare_data import trainTestPatients
 
 # Import from TimeEmbeddingVal
 from TimeEmbeddingVal import (
-    DEVICE,
     get_all_temporal_features,
     IrregularTimeSeriesDataset,
     collate_fn,
     load_and_prepare_patients,
     split_patients_train_val,
+)
+
+# Import RNN components from TimeEmbedding
+from TimeEmbedding import (
+    DEVICE,
     TimeEmbeddedRNNCell,
 )
 
