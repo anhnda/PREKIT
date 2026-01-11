@@ -389,13 +389,13 @@ def main():
         val_ds = HybridDataset(val_p, temporal_feats, encoder, stats)
         test_ds = HybridDataset(test_p_list, temporal_feats, encoder, stats)
 
-        train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, collate_fn=hybrid_collate_fn)
-        val_loader = DataLoader(val_ds, batch_size=64, shuffle=False, collate_fn=hybrid_collate_fn)
-        test_loader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=hybrid_collate_fn)
+        train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=hybrid_collate_fn)
+        val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
+        test_loader = DataLoader(test_ds, batch_size=6324, shuffle=False, collate_fn=hybrid_collate_fn)
 
         # 2. Stage 1: RNN Training (Time Only)
         rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=12).to(DEVICE)
-        opt = torch.optim.Adam(rnn.parameters(), lr=0.0005)
+        opt = torch.optim.Adam(rnn.parameters(), lr=0.001)
         rnn = train_rnn_extractor(rnn, train_loader, val_loader, nn.BCELoss(), opt, epochs=100)
 
         # 3. Stage 2: Triple Feature Fusion
