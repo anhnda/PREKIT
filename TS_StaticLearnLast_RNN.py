@@ -20,6 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from xgboost import XGBClassifier
+import random
 
 from sklearn.metrics import (
     accuracy_score,
@@ -31,7 +32,19 @@ from sklearn.metrics import (
     precision_recall_curve,
     auc,
 )
+import random
+import os
 
+def seed_everything(seed=42):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+seed_everything()
 PT = "/Users/anhnd/CodingSpace/Python/PREDKIT"
 if sys.platform != "darwin":
     PT = "/home/anhnda/PREKIT"
