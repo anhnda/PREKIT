@@ -110,14 +110,14 @@ class SimpleStaticEncoder:
 
 class MultiProtoMetricHead(nn.Module):
     """
-    Advanced TabPFN Mimic.
-    Instead of forcing all patients into 2 global clusters (Sick vs Healthy),
-    this allows for 'Subtypes' (e.g. 5 types of Sick, 5 types of Healthy).
+    UPGRADED: Soft-Assignment Multi-Prototype Head.
     
-    This preserves the diversity of the data, allowing TabPFN to find 
-    nearest neighbors even for 'rare' outlier cases, improving Recall.
+    1. Uses LogSumExp instead of Max. This prevents 'Dead Prototypes' 
+       by ensuring all prototypes receive gradients.
+    2. Adds a Temperature factor to control cluster tightness.
+    3. Reduces prototypes to 3 (better stability for smaller datasets).
     """
-    def __init__(self, input_dim, hidden_dim=64, num_prototypes=5, dropout=0.3):
+    def __init__(self, input_dim, hidden_dim=64, num_prototypes=3, dropout=0.3):
         super(MultiProtoMetricHead, self).__init__()
         
         self.project = nn.Sequential(
@@ -128,34 +128,33 @@ class MultiProtoMetricHead(nn.Module):
             nn.Linear(hidden_dim, hidden_dim)
         )
         
-        # K Prototypes for Class 0 (Healthy Subtypes)
+        # Reduced to 3 prototypes per class for stability
         self.proto0 = nn.Parameter(torch.randn(num_prototypes, hidden_dim))
-        
-        # K Prototypes for Class 1 (Sick Subtypes)
         self.proto1 = nn.Parameter(torch.randn(num_prototypes, hidden_dim))
+        
+        # Temperature: Lower = Sharper decisions, Higher = Softer clusters
+        self.temperature = 0.1 
         
     def forward(self, x):
         # [Batch, Hidden_Dim]
         emb = F.normalize(self.project(x), p=2, dim=1)
-        
-        # Normalize prototypes
         p0 = F.normalize(self.proto0, p=2, dim=1)
         p1 = F.normalize(self.proto1, p=2, dim=1)
         
-        # Calculate similarity to ALL prototypes
-        # sim0 shape: [Batch, K]
+        # Similarity: [Batch, K]
         sim0 = torch.matmul(emb, p0.T) 
         sim1 = torch.matmul(emb, p1.T)
         
-        # Aggregation: "How close is this patient to the NEAREST valid prototype?"
-        # We take the Max similarity across the K subtypes.
-        best_sim0, _ = sim0.max(dim=1, keepdim=True)
-        best_sim1, _ = sim1.max(dim=1, keepdim=True)
+        # --- KEY CHANGE: Soft Aggregation (LogSumExp) ---
+        # Instead of taking the single best match, we sum the exponentials.
+        # This represents the distance to the "Cloud" of prototypes.
         
-        # If closer to ANY sick prototype than ANY healthy prototype -> Predict Sick
-        logits = best_sim1 - best_sim0
+        # We divide by temperature to sharpen the distribution before summing
+        dist_0 = torch.logsumexp(sim0 / self.temperature, dim=1, keepdim=True) * self.temperature
+        dist_1 = torch.logsumexp(sim1 / self.temperature, dim=1, keepdim=True) * self.temperature
         
-        return torch.sigmoid(logits)
+        # Logits: How much closer to Sick Cloud than Healthy Cloud?
+        return torch.sigmoid(dist_1 - dist_0)
 # ==============================================================================
 # 2. Dataset (Returns Temporal, Label, AND Static)
 # ==============================================================================
@@ -262,10 +261,10 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
     temp_head = MultiProtoMetricHead(
         input_dim=rnn_dim + static_dim, 
         hidden_dim=64,
-        num_prototypes=5 
+        num_prototypes=3  # Reduced from 5 to 3 for robustness
     ).to(DEVICE)
     
-    full_optimizer = torch.optim.Adam(list(model.parameters()) + list(temp_head.parameters()), lr=0.001)
+    full_optimizer = torch.optim.Adam(list(model.parameters()) + list(temp_head.parameters()), lr=0.0005)
     best_auc = 0
     best_state = None
     patience = 6
