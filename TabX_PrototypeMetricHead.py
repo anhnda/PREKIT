@@ -353,7 +353,7 @@ def get_triple_features(model, loader):
             last_vals_arr = np.array(batch_last_vals)
             
             # 4. TRIPLE CONCATENATION
-            combined = np.hstack([h, last_vals_arr, s])
+            combined = np.hstack([last_vals_arr, s, h])
             
             features.append(combined)
             labels_out.extend(labels.numpy())
