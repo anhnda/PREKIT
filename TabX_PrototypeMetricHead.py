@@ -482,7 +482,7 @@ def main():
         fpr_b, tpr_b, _ = roc_curve(y_te_b, y_prob_b)
         ax2.plot(fpr_b, tpr_b, lw=2, label=f"Fold {fold} (AUC = {metrics_base['auc'][-1]:.3f})")
         
-        print(f"  Fold {fold} Results -> Hybrid: {metrics_hybrid['auc'][-1]:.3f} vs Baseline: {metrics_base['auc'][-1]:.3f}")
+        print(f"  Fold {fold} Results -> Hybrid: {metrics_hybrid['auc_pr'][-1]:.3f} vs Baseline: {metrics_base['auc_pr'][-1]:.3f}")
 
     # Final Plot Config
     
