@@ -1,0 +1,8 @@
+TS_StaticLearnLast_RNN.py
+
+AUC             | Hybrid: 0.8324 ± 0.0167  vs  Baseline: 0.8127 ± 0.0249
+AUC-PR          | Hybrid: 0.7614 ± 0.0431  vs  Baseline: 0.7404 ± 0.0477
+Accuracy        | Hybrid: 0.7628 ± 0.0197  vs  Baseline: 0.7628 ± 0.0185
+Specificity     | Hybrid: 0.7896 ± 0.0326  vs  Baseline: 0.8265 ± 0.0222
+Precision       | Hybrid: 0.6910 ± 0.0333  vs  Baseline: 0.7131 ± 0.0219
+Recall          | Hybrid: 0.7215 ± 0.0165  vs  Baseline: 0.6646 ± 0.0548
