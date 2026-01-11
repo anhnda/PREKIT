@@ -405,7 +405,7 @@ def main():
         
         # The Environment (TabPFN)
         # N_ensemble_configurations can be lowered to speed up RL loop
-        tabpfn_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=2) 
+        tabpfn_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu') 
         tabpfn_env.fit(X_train_init, y_train_init)
 
         # 3. RL Training
