@@ -8,3 +8,5 @@ env/
 venv/
 .env
 .claude
+result/
+tmp/
