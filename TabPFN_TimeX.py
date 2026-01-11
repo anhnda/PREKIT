@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tabpfn import TabPFNClassifier
 import random
+import os
 from sklearn.metrics import (
     accuracy_score,
     recall_score,
