@@ -1,9 +1,9 @@
 """
-OPTIMIZED HYBRID MODEL: Time-Embedded RNN + Gated Head Pre-training + XGBoost
+FIXED HYBRID MODEL: Handles Categorical Static Features (Gender, Race, etc.)
 
-- Stage 1: RNN is trained using a 'Gated Decision Head' (mimics XGBoost logic).
-- Stage 2: We extract the RNN embeddings (h) and concatenate with Static Features (s).
-- Stage 3: XGBoost predicts using the combined [h, s] vector.
+Changes:
+1. Added 'SimpleEncoder' to convert strings ('F', 'M', 'White') to numbers.
+2. Updated HybridDataset to use the encoder.
 """
 
 import pandas as pd
@@ -16,7 +16,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from xgboost import XGBClassifier
-
 from sklearn.metrics import roc_auc_score
 
 PT = "/Users/anhnd/CodingSpace/Python/PREDKIT"
@@ -45,68 +44,101 @@ FIXED_FEATURES = [
 ]
 
 # ==============================================================================
-# 1. The Gated Decision Head (The "Smart" Head)
+# 1. NEW: Categorical Encoder Helper
+# ==============================================================================
+
+class SimpleStaticEncoder:
+    """Encodes categorical static features (e.g. Gender 'F'->1, Race 'Asian'->3)"""
+    def __init__(self, features):
+        self.features = features
+        self.mappings = {f: {} for f in features}
+        self.counts = {f: 0 for f in features}
+
+    def fit(self, patients):
+        """Scans patients to learn the mapping from String -> Int"""
+        for p in patients:
+            for f in self.features:
+                val = p.measures.get(f, 0.0)
+                # Unpack if it's a dict (some Patient objects store values as {timestamp: val})
+                if hasattr(val, 'values') and len(val) > 0:
+                    val = list(val.values())[0]
+                elif hasattr(val, 'values') and len(val) == 0:
+                    val = 0.0
+                
+                val_str = str(val)
+                
+                # If it's not a number, add to mapping
+                try:
+                    float(val)
+                except ValueError:
+                    if val_str not in self.mappings[f]:
+                        self.mappings[f][val_str] = float(self.counts[f])
+                        self.counts[f] += 1
+
+    def transform(self, patient):
+        """Converts a patient's static features to a float vector"""
+        vec = []
+        for f in self.features:
+            val = patient.measures.get(f, 0.0)
+            if hasattr(val, 'values') and len(val) > 0:
+                val = list(val.values())[0]
+            elif hasattr(val, 'values') and len(val) == 0:
+                val = 0.0
+            
+            # Try converting to float directly
+            try:
+                numeric_val = float(val)
+            except ValueError:
+                # Use mapping
+                val_str = str(val)
+                numeric_val = self.mappings[f].get(val_str, -1.0) # -1 for unknown categories
+            
+            vec.append(numeric_val)
+        return vec
+
+# ==============================================================================
+# 2. Gated Decision Head (Same as before)
 # ==============================================================================
 
 class GatedDecisionHead(nn.Module):
-    """
-    Mimics XGBoost/Tree logic using Gated Linear Units (GLU).
-    Used to train the RNN so it produces 'tree-friendly' features.
-    """
     def __init__(self, input_dim, hidden_dim=64, dropout=0.3):
         super(GatedDecisionHead, self).__init__()
-        
-        # Feature Selection Gate (Soft Mask)
-        self.gate = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.Sigmoid() 
-        )
-        
-        # Gated Processing Layers
+        self.gate = nn.Sequential(nn.Linear(input_dim, input_dim), nn.Sigmoid())
         self.fc1 = nn.Linear(input_dim, hidden_dim * 2) 
         self.fc2 = nn.Linear(hidden_dim, hidden_dim * 2)
         self.dropout = nn.Dropout(dropout)
         self.final = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
-        # 1. Select Features (Masking)
         mask = self.gate(x)
         x = x * mask 
-        
-        # 2. Process (GLU = Signal * Sigmoid(Gate))
         out = self.fc1(x)
         out = F.glu(out, dim=-1)
         out = self.dropout(out)
-        
         residual = out
         out = self.fc2(out)
         out = F.glu(out, dim=-1)
-        out = out + residual # Skip connection
-        
+        out = out + residual
         return torch.sigmoid(self.final(out))
 
 # ==============================================================================
-# 2. Dataset & Collate (Returns Static Features)
+# 3. Updated Dataset to use Encoder
 # ==============================================================================
 
 class HybridDataset(Dataset):
-    def __init__(self, patients, feature_names, normalization_stats=None):
+    def __init__(self, patients, feature_names, static_encoder, normalization_stats=None):
         self.data = []
         self.labels = []
         self.static_data = [] 
         self.feature_names = feature_names
 
         all_values = []
-        for patient in patients.patientList:
+        for patient in patients: # Changed from patients.patientList for list compatibility
             times, values, masks = extract_temporal_data(patient, feature_names)
             if times is None: continue
             
-            # Static Data
-            s_vec = []
-            for feat in FIXED_FEATURES:
-                val = patient.measures.get(feat, 0.0)
-                if hasattr(val, 'values'): val = list(val.values())[0] if len(val)>0 else 0.0
-                s_vec.append(float(val))
+            # USE ENCODER HERE (Fixes the 'F' error)
+            s_vec = static_encoder.transform(patient)
             
             self.static_data.append(torch.tensor(s_vec, dtype=torch.float32))
             self.data.append({'times': times, 'values': values, 'masks': masks})
@@ -169,7 +201,7 @@ def hybrid_collate_fn(batch):
     return temporal_batch, torch.tensor(label_list, dtype=torch.float32), torch.stack(static_list)
 
 # ==============================================================================
-# 3. RNN Feature Extractor (The Backbone)
+# 4. RNN Feature Extractor
 # ==============================================================================
 
 class RNNFeatureExtractor(nn.Module):
@@ -185,22 +217,12 @@ class RNNFeatureExtractor(nn.Module):
         return self.rnn_cell(times, values, masks, lengths)
 
 def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, epochs=50):
-    """
-    Pre-trains RNN using the GatedDecisionHead.
-    This ensures RNN learns features suitable for tree-based logic.
-    """
-    # USE THE SMART HEAD HERE
     rnn_dim = model.rnn_cell.hidden_dim
     static_dim = len(FIXED_FEATURES)
     
-    # We train the head on [RNN_h + Static_s] to perfectly mimic the final XGBoost task
+    # Train using the "Smart" Gated Head
     temp_head = GatedDecisionHead(input_dim=rnn_dim + static_dim).to(DEVICE)
-    
-    # We need to optimize both the RNN and the Head
-    full_optimizer = torch.optim.Adam(
-        list(model.parameters()) + list(temp_head.parameters()), 
-        lr=0.001
-    )
+    full_optimizer = torch.optim.Adam(list(model.parameters()) + list(temp_head.parameters()), lr=0.001)
     
     best_auc = 0
     best_state = None
@@ -215,22 +237,14 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
         for t_data, labels, s_data in train_loader: 
             labels = labels.to(DEVICE)
             s_data = s_data.to(DEVICE)
-            
-            # 1. Get RNN features
             h = model(t_data)
-            
-            # 2. Combine with Static (just like XGBoost will do later)
             combined = torch.cat([h, s_data], dim=1)
-            
-            # 3. Predict with Gated Head
             preds = temp_head(combined).squeeze(-1)
             loss = criterion(preds, labels)
-            
             full_optimizer.zero_grad()
             loss.backward()
             full_optimizer.step()
             
-        # Validation
         if (epoch+1) % 5 == 0:
             model.eval()
             temp_head.eval()
@@ -241,7 +255,6 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
                     h = model(t_data)
                     combined = torch.cat([h, s_data], dim=1)
                     preds = temp_head(combined).squeeze(-1)
-                    
                     all_preds.extend(preds.cpu().numpy())
                     all_lbls.extend(labels.cpu().numpy())
             
@@ -263,11 +276,10 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
     return model
 
 # ==============================================================================
-# 4. Feature Extraction & XGBoost
+# 5. Feature Extraction & XGBoost
 # ==============================================================================
 
 def get_hybrid_features(model, loader):
-    """Extracts RNN Embeddings AND Static Features."""
     model.eval()
     features = []
     labels_out = []
@@ -289,28 +301,38 @@ def main():
     
     patients = load_and_prepare_patients()
     temporal_feats = get_all_temporal_features(patients)
+    
+    # 1. Fit Static Encoder (Fixes 'F' error)
+    print("Encoding static features...")
+    encoder = SimpleStaticEncoder(FIXED_FEATURES)
+    encoder.fit(patients.patientList)
+    
     print(f"Input: {len(temporal_feats)} Temporal + {len(FIXED_FEATURES)} Static Features")
     
     auc_scores = []
     
     for fold, (train_full, test_p) in enumerate(trainTestPatients(patients)):
         print(f"\n--- Fold {fold} ---")
-        train_p, val_p = split_patients_train_val(train_full, val_ratio=0.1, seed=42+fold)
+        train_p_obj, val_p_obj = split_patients_train_val(train_full, val_ratio=0.1, seed=42+fold)
         
-        # 1. Data Loaders
-        train_ds = HybridDataset(train_p, temporal_feats)
+        # Access the list inside the object if needed, depending on how split returns
+        train_p = train_p_obj.patientList
+        val_p = val_p_obj.patientList
+        test_p_list = test_p.patientList
+        
+        # 1. Data Loaders (Pass encoder!)
+        train_ds = HybridDataset(train_p, temporal_feats, encoder)
         stats = train_ds.get_normalization_stats()
-        val_ds = HybridDataset(val_p, temporal_feats, stats)
-        test_ds = HybridDataset(test_p, temporal_feats, stats)
+        val_ds = HybridDataset(val_p, temporal_feats, encoder, stats)
+        test_ds = HybridDataset(test_p_list, temporal_feats, encoder, stats)
         
         train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=hybrid_collate_fn)
         val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
         
-        # 2. Stage 1: Train RNN with Gated Head
+        # 2. Stage 1: Train RNN
         rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=128).to(DEVICE)
         opt = torch.optim.Adam(rnn.parameters(), lr=0.001)
-        # Pass full_optimizer logic is inside train_rnn_extractor now
         rnn = train_rnn_extractor(rnn, train_loader, val_loader, nn.BCELoss(), opt)
         
         # 3. Feature Fusion
@@ -322,18 +344,13 @@ def main():
         # 4. Stage 3: Train XGBoost
         print(f"  [Stage 3] Training XGBoost on {X_train.shape[1]} features...")
         
-        ratio = np.sum(y_train==0) / np.sum(y_train==1)
+        ratio = np.sum(y_train==0) / (np.sum(y_train==1) + 1e-6)
         
         clf = XGBClassifier(
-            n_estimators=1000,
-            max_depth=5,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            scale_pos_weight=ratio,
-            early_stopping_rounds=20,
-            eval_metric='auc',
-            random_state=42
+            n_estimators=1000, max_depth=5, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8,
+            scale_pos_weight=ratio, early_stopping_rounds=20,
+            eval_metric='auc', random_state=42
         )
         
         clf.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
