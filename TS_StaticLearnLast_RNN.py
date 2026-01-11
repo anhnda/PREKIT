@@ -64,10 +64,10 @@ from TimeEmbedding import DEVICE, TimeEmbeddedRNNCell
 # Static features list
 FIXED_FEATURES = [
     "age", "gender", "race", "chronic_pulmonary_disease", "ckd_stage",
-    "congestive_heart_failure", "dka_type", "history_aci", "history_ami", 
-    "hypertension", "liver_disease", "macroangiopathy", "malignant_cancer", 
-    "microangiopathy", "uti", "oasis", "saps2", "sofa", 
-    "mechanical_ventilation", "use_NaHCO3", "preiculos", "gcs_unable", "egfr"
+    "congestive_heart_failure", "dka_type", "history_aci", "history_ami",
+    "hypertension", "liver_disease", "macroangiopathy", "malignant_cancer",
+    "microangiopathy", "uti", "oasis", "saps2", "sofa",
+    "mechanical_ventilation", "use_NaHCO3", "preiculos", "gcs_unable"
 ]
 
 # ==============================================================================
