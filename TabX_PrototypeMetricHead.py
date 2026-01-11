@@ -305,7 +305,7 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
             aupr = average_precision_score(all_lbls, all_preds)
             auc_val = 2 * auc * aupr / (auc + aupr + 1e-8)  # Fused AUC Metric
             auc_val = aupr  # Use AUPR for early stopping
-            print(f"    Epoch {epoch+1} Val AUC: {auc_val:.4f}")
+            print(f"    Epoch {epoch+1} Val AUPR: {auc_val:.4f}")
             
             if auc_val > best_auc:
                 best_auc = auc_val
