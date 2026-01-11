@@ -19,9 +19,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from xgboost import XGBClassifier
+from tabpfn import TabPFNClassifier
 import random
-
+import os
 from sklearn.metrics import (
     accuracy_score,
     recall_score,
@@ -32,9 +32,6 @@ from sklearn.metrics import (
     precision_recall_curve,
     auc,
 )
-import random
-import os
-
 def seed_everything(seed=42):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -49,6 +46,7 @@ PT = "/Users/anhnd/CodingSpace/Python/PREDKIT"
 if sys.platform != "darwin":
     PT = "/home/anhnda/PREKIT"
 sys.path.append(PT)
+
 
 from constants import NULLABLE_MEASURES
 from utils.class_patient import Patients
@@ -424,12 +422,9 @@ def main():
         # 4. Stage 3: TabPFN Training
         ratio = np.sum(y_train==0) / (np.sum(y_train==1) + 1e-6)
         
-        clf = XGBClassifier(
-            n_estimators=1000, max_depth=4, learning_rate=0.03,
-            subsample=0.8, colsample_bytree=0.8, scale_pos_weight=ratio, 
-            early_stopping_rounds=30, eval_metric='auc', random_state=42
-        )
-        clf.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        clf = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+
+        clf.fit(X_train, y_train)
         
         # 5. Hybrid Evaluation
         y_prob = clf.predict_proba(X_test)[:, 1]
@@ -470,13 +465,11 @@ def main():
         X_te_b = df_test_enc.drop(columns=["akd"]).fillna(0)
         y_te_b = df_test_enc["akd"]
         
-        xgb_base = XGBClassifier(
-            n_estimators=500, max_depth=6, learning_rate=0.05, 
-            scale_pos_weight=ratio, eval_metric='auc', random_state=42
-        )
-        xgb_base.fit(X_tr_b, y_tr_b)
+        model_base  = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+
+        model_base.fit(X_tr_b, y_tr_b)
         
-        y_prob_b = xgb_base.predict_proba(X_te_b)[:, 1]
+        y_prob_b = model_base.predict_proba(X_te_b)[:, 1]
         y_pred_b = (y_prob_b > 0.5).astype(int)
         
         tn, fp, _, _ = confusion_matrix(y_te_b, y_pred_b).ravel()
