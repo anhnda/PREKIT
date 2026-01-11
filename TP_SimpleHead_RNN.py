@@ -269,7 +269,7 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
 
     # Add learning rate scheduler for better convergence
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        full_optimizer, mode='max', factor=0.5, patience=3, verbose=True
+        full_optimizer, mode='max', factor=0.5, patience=3
     )
 
     best_auc = 0
@@ -277,7 +277,7 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
     patience = 8
     counter = 0
 
-    print("  [Stage 1] Pre-training RNN with Simple MLP Head...")
+    print("  [Stage 1] Pre-training RNN with [RNN + Static] using Simple MLP Head...")
     for epoch in range(epochs):
         model.train()
         temp_head.train()

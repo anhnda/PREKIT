@@ -5,14 +5,29 @@
 - **Same RNN features hurt TabPFN** → Worse than baseline (-1.7% AUC-PR)
 - **Root cause**: Training objective/head doesn't produce features TabPFN can use
 
+## KEY FINDING: [RNN + Static] Training is Better!
+
+**Critical Result**:
+- Training with [RNN + Static]: AUC-PR 0.7955 (gap: -0.0169) ✅
+- Training with [RNN only]: AUC-PR 0.7895 (gap: -0.0229) ❌
+- **Conclusion**: ALL future experiments MUST use [RNN + Static] during training
+
 ## Completed Experiments
 
 ### 1. TP_StaticLearnLast_RNN.py - Attention-Based Head
+- **Training**: [RNN + Static] ✅
 - **Head**: Multi-head attention + layer norm (mimics transformer architecture)
-- **Result**: ❌ Inconsistent, overall negative
-- **Issue**: Complex head might overfit or produce poorly calibrated features
+- **Result**: AUC-PR 0.7955 vs Baseline 0.8124 (-0.0169)
+- **Issue**: Complex head might overfit, but better than time-only training
 
-### 2. TP_SimpleHead_RNN.py - Simple MLP Head
+### 2. TP_TimeLearnThenCat.py - Time-Only Training
+- **Training**: [RNN only] ❌
+- **Head**: Attention-based
+- **Result**: AUC-PR 0.7895 vs Baseline 0.8124 (-0.0229)
+- **Conclusion**: Worse than static training - DON'T USE
+
+### 3. TP_SimpleHead_RNN.py - Simple MLP Head
+- **Training**: [RNN + Static] ✅ (CORRECT)
 - **Head**: BatchNorm + MLP + heavy dropout + LR scheduler
 - **Changes**: Simpler architecture, stronger regularization
 - **Status**: 🔄 To test
