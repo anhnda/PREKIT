@@ -1,9 +1,8 @@
 """
-GOLD STANDARD: PURE TEMPORAL HYBRID vs BASELINE
-- Architecture: Time-Embedded RNN (Gated) + XGBoost
+GOLD STANDARD: RESIDUAL TEMPORAL HYBRID vs BASELINE
+- Architecture: [RNN Embedding + Last Values] -> XGBoost
 - Features: Temporal Only (NO Demographics/Static)
-- Comparison: vs. XGBoost on "Last Values"
-- Metrics: Full Suite (Specificity, AUC-PR, etc.)
+- Logic: Combines "Trend History" (RNN) with "Instant State" (Last Value)
 """
 
 import pandas as pd
@@ -161,7 +160,7 @@ class RNNFeatureExtractor(nn.Module):
 
 def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, epochs=50):
     rnn_dim = model.rnn_cell.hidden_dim
-    # Pure Temporal: Input dim is just RNN hidden size
+    # Pre-train head uses only RNN output initially
     temp_head = GatedDecisionHead(input_dim=rnn_dim).to(DEVICE)
     full_optimizer = torch.optim.Adam(list(model.parameters()) + list(temp_head.parameters()), lr=0.001)
     
@@ -209,24 +208,62 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
     model.load_state_dict(best_state)
     return model
 
-def get_rnn_features(model, loader):
+# ==============================================================================
+# 4. UPDATED: Feature Extractor (RNN + Last Value Residual)
+# ==============================================================================
+
+def get_rnn_and_last_features(model, loader):
     model.eval()
     features = []
     labels_out = []
+    
     with torch.no_grad():
         for t_data, labels in loader:
+            # 1. Get RNN Embedding (128 dims)
             h = model(t_data).cpu().numpy()
-            features.append(h)
+            
+            # 2. Extract "Last Values" manually from the tensor
+            vals = t_data['values'].cpu().numpy()
+            masks = t_data['masks'].cpu().numpy()
+            
+            batch_last_vals = []
+            for i in range(len(vals)):
+                # For each patient in batch, find last valid value per feature
+                patient_last = []
+                for f_idx in range(vals.shape[2]):
+                    # Get all measurements for feature f_idx
+                    f_vals = vals[i, :, f_idx]
+                    f_mask = masks[i, :, f_idx]
+                    
+                    # Get indices where mask is 1 (valid)
+                    valid_idx = np.where(f_mask > 0)[0]
+                    
+                    if len(valid_idx) > 0:
+                        # Take the last valid value
+                        last_v = f_vals[valid_idx[-1]]
+                    else:
+                        # If no measure, use 0 (mean imputation due to norm)
+                        last_v = 0.0
+                    patient_last.append(last_v)
+                batch_last_vals.append(patient_last)
+            
+            last_vals_arr = np.array(batch_last_vals)
+            
+            # 3. Concatenate: [RNN_Embedding (128) + Last_Values (25)]
+            combined = np.hstack([h, last_vals_arr])
+            
+            features.append(combined)
             labels_out.extend(labels.numpy())
+            
     return np.vstack(features), np.array(labels_out)
 
 # ==============================================================================
-# 4. Main Execution
+# 5. Main Execution
 # ==============================================================================
 
 def main():
     print("="*80)
-    print("PURE TEMPORAL HYBRID vs BASELINE")
+    print("RESIDUAL HYBRID (RNN + LAST VALUES) vs BASELINE")
     print("="*80)
     
     patients = load_and_prepare_patients()
@@ -245,7 +282,7 @@ def main():
         train_p, val_p, test_p_list = train_p_obj.patientList, val_p_obj.patientList, test_p.patientList
         
         # ----------------------------------------------------------------------
-        # A. HYBRID MODEL (Time-Embedded RNN + XGBoost)
+        # A. RESIDUAL HYBRID MODEL (Time-Embedded RNN + Last Values -> XGBoost)
         # ----------------------------------------------------------------------
         train_ds = TemporalDataset(train_p, temporal_feats)
         stats = train_ds.get_normalization_stats()
@@ -256,17 +293,23 @@ def main():
         val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=temporal_collate_fn)
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=temporal_collate_fn)
         
+        # 1. Train RNN
         rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=128).to(DEVICE)
         opt = torch.optim.Adam(rnn.parameters(), lr=0.001)
         rnn = train_rnn_extractor(rnn, train_loader, val_loader, nn.BCELoss(), opt)
         
-        X_train, y_train = get_rnn_features(rnn, train_loader)
-        X_val, y_val = get_rnn_features(rnn, val_loader)
-        X_test, y_test = get_rnn_features(rnn, test_loader)
+        # 2. Extract RNN + Last Values (The "Residual" Connection)
+        print("  [Stage 2] Extracting RNN + Last Value Features...")
+        X_train, y_train = get_rnn_and_last_features(rnn, train_loader)
+        X_val, y_val = get_rnn_and_last_features(rnn, val_loader)
+        X_test, y_test = get_rnn_and_last_features(rnn, test_loader)
         
+        print(f"    Vector Size: {X_train.shape[1]} (128 RNN + {len(temporal_feats)} Last Values)")
+
+        # 3. Train XGBoost
         ratio = np.sum(y_train==0) / (np.sum(y_train==1) + 1e-6)
         clf = XGBClassifier(
-            n_estimators=1000, max_depth=5, learning_rate=0.05, 
+            n_estimators=1000, max_depth=4, learning_rate=0.03, 
             subsample=0.8, colsample_bytree=0.8, scale_pos_weight=ratio, 
             early_stopping_rounds=30, eval_metric='auc', random_state=42
         )
@@ -293,15 +336,12 @@ def main():
         # ----------------------------------------------------------------------
         print("  [Baseline] Training Standard XGBoost (Last Values)...")
         
-        # Extract dataframe, filter only temporal cols to match Hybrid "No Static" rule
-        # Note: We keep ID cols temporarily to pivot/group, then drop
+        # Helper to get "Last Values" dataframe
         def get_last_values(p_obj, feature_list):
             df = p_obj.getMeasuresBetween(
                 pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
             )
-            # Keep only temporal features + label
             cols_to_keep = feature_list + ["akd"]
-            # Filter available columns
             cols_to_keep = [c for c in cols_to_keep if c in df.columns]
             return df[cols_to_keep].fillna(0)
 
@@ -338,19 +378,20 @@ def main():
         print(f"  Fold {fold} -> Hybrid: {metrics_hybrid['auc'][-1]:.3f} vs Baseline: {metrics_base['auc'][-1]:.3f}")
 
     # Final Plot
+    
     for ax in [ax1, ax2]:
         ax.plot([0, 1], [0, 1], linestyle="--", color="navy", lw=2)
         ax.set_xlim([0.0, 1.0])
         ax.set_ylim([0.0, 1.05])
         ax.legend(loc="lower right")
-    ax1.set_title("Hybrid (TimeEmbedded RNN+XGB)")
-    ax2.set_title("Baseline (Last Value XGB)")
+    ax1.set_title("Residual Hybrid (RNN + LastVal)")
+    ax2.set_title("Baseline (LastVal)")
     plt.tight_layout()
-    plt.savefig("result/pure_temporal_comparison.png", dpi=300)
+    plt.savefig("result/residual_hybrid_comparison.png", dpi=300)
 
     # Final Stats
     print("\n" + "="*80)
-    print("FINAL RESULTS SUMMARY (TEMPORAL ONLY)")
+    print("FINAL RESULTS SUMMARY (RESIDUAL HYBRID vs BASELINE)")
     print("="*80)
     
     def print_stat(name, h_metrics, b_metrics):
