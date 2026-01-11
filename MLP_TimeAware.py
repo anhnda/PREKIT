@@ -71,7 +71,7 @@ def extract_temporal_features(patients, time_window_start=-6, time_window_end=24
 
     for patient in patients.patientList:
         intime = patient.intime
-        patient_data = {'subject_id': patient.subjectId}
+        patient_data = {'subject_id': patient.subject_id}
 
         # Calculate AKI cutoff if positive
         if patient.akdPositive:
