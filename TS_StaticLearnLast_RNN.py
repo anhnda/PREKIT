@@ -327,7 +327,7 @@ def get_triple_features(model, loader):
             last_vals_arr = np.array(batch_last_vals)
             
             # 4. TRIPLE CONCATENATION
-            combined = np.hstack([h, last_vals_arr, s])
+            combined = np.hstack([last_vals_arr, s, h])
             
             features.append(combined)
             labels_out.extend(labels.numpy())
@@ -375,7 +375,7 @@ def main():
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
         
         # 2. Stage 1: RNN Training
-        rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=48).to(DEVICE)
+        rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=12).to(DEVICE)
         opt = torch.optim.Adam(rnn.parameters(), lr=0.001)
         rnn = train_rnn_extractor(rnn, train_loader, val_loader, nn.BCELoss(), opt)
         
