@@ -264,7 +264,7 @@ def main():
         ).to(DEVICE)
 
         criterion = nn.BCELoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
         # Train with validation
         print("\nTraining with validation monitoring...")
