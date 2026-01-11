@@ -110,57 +110,50 @@ class SimpleStaticEncoder:
 
 class TabPFNMimicHead(nn.Module):
     """
-    Mimics TabPFN's 'In-Context' logic.
-    Instead of processing each patient in isolation (like a Tree/MLP),
-    this uses Self-Attention across the BATCH to classify.
-    
-    This forces the RNN to produce embeddings where 'similar' patients
-    cluster together, perfectly aligning with TabPFN's inductive bias.
+    Mimics TabPFN's 'In-Context' logic using Cross-Sample Attention.
+    Updated to use batch_first=True to silence PyTorch warnings.
     """
     def __init__(self, input_dim, hidden_dim=64, num_heads=4, dropout=0.3):
         super(TabPFNMimicHead, self).__init__()
         
-        # 1. Project features to a 'Transformer-friendly' space
         self.project = nn.Linear(input_dim, hidden_dim)
         self.act = nn.GELU()
         
-        # 2. Transformer Encoder Layer
-        # We use batch_first=False so we can treat the actual Batch Size 
-        # as the Sequence Length (S), allowing cross-sample attention.
+        # FIX: Set batch_first=True to enable fast path and silence warnings
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim, 
             nhead=num_heads, 
             dim_feedforward=hidden_dim*2, 
             dropout=dropout,
-            activation="gelu"
+            activation="gelu",
+            batch_first=True 
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=1)
         
-        # 3. Final Classification
         self.final = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
-        # x shape: [Batch_Size, Input_Dim]
+        # x shape: [Actual_Batch_Size, Input_Dim]
         
-        # Project: [Batch_Size, Hidden_Dim]
-        x_emb = self.act(self.project(x))
+        # 1. Project
+        x_emb = self.act(self.project(x)) # [Actual_Batch_Size, Hidden_Dim]
         
-        # Reshape for Transformer: [Seq_Len, Batch_Dim, Embed_Dim]
-        # We treat the data batch (Batch_Size) as the Sequence Length.
-        # We set the Transformer's notion of 'batch' to 1.
-        # Shape becomes: [Batch_Size, 1, Hidden_Dim]
-        x_seq = x_emb.unsqueeze(1)
+        # 2. Reshape for Cross-Sample Attention
+        # With batch_first=True, Transformer expects: [Batch, Seq_Len, Features]
+        # We want the transformer to mix information across our patients.
+        # So we treat our Actual_Batch_Size as the Sequence Length.
+        # Transformer Batch Size becomes 1.
+        # New Shape: [1, Actual_Batch_Size, Hidden_Dim]
+        x_seq = x_emb.unsqueeze(0) 
         
-        # Apply Attention: 
-        # Each patient attends to every other patient in the batch
+        # 3. Apply Attention
         x_ctx = self.transformer(x_seq)
         
-        # Remove dummy dimension: [Batch_Size, Hidden_Dim]
-        x_ctx = x_ctx.squeeze(1)
+        # 4. Squeeze back to [Actual_Batch_Size, Hidden_Dim]
+        x_ctx = x_ctx.squeeze(0)
         
-        # Residual connection (optional, helps stability)
+        # Residual + Final
         x_out = x_ctx + x_emb
-        
         return torch.sigmoid(self.final(x_out))
 
 # ==============================================================================
