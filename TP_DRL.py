@@ -317,6 +317,8 @@ def train_rnn_rl(rnn_policy, train_loader, tabpfn, epochs=20, alpha_baseline=0.1
                 rewards = []
                 for i in range(len(y_true)):
                     r = probs[i, y_true[i]]
+                    if y_true[i] == 1:
+                         r = r * 2.0
                     rewards.append(r)
                 
                 rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
