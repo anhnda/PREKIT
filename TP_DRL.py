@@ -1,19 +1,3 @@
-"""
-DEEP RL FOR TABULAR TIME SERIES (Stable & High Performance)
-
-Key Features:
-1. Dual Data Pipeline:
-   - RNN sees NORMALIZED data (Z-scored) for stable training.
-   - TabPFN sees RAW data (preserving distributions) for high accuracy.
-2. Architecture:
-   - Agent: Gaussian RNN Policy (outputs Mean & Std for embedding Z).
-   - Environment: TabPFN (frozen judge providing reward).
-3. Training Strategy:
-   - Stage 1: Supervised Warm-Up (forces Z to be predictive).
-   - Stage 2: Fit Environment (TabPFN learns the Z manifold).
-   - Stage 3: REINFORCE (fine-tunes Z to maximize TabPFN confidence).
-"""
-
 import pandas as pd
 import numpy as np
 import sys
@@ -29,15 +13,9 @@ import os
 from matplotlib import pyplot as plt
 
 from sklearn.metrics import (
-    accuracy_score,
-    recall_score,
-    precision_score,
-    confusion_matrix,
     roc_auc_score,
-    roc_curve,
     precision_recall_curve,
-    auc,
-    average_precision_score
+    auc
 )
 
 # ==============================================================================
@@ -81,7 +59,7 @@ FIXED_FEATURES = [
 ]
 
 # ==============================================================================
-# 1. Helpers: Encoder & Hybrid Dataset (The Fix)
+# 1. Helpers: Encoder & Hybrid Dataset
 # ==============================================================================
 
 class SimpleStaticEncoder:
@@ -128,16 +106,13 @@ class HybridDataset(Dataset):
         all_values = []
         patient_list = patients.patientList if hasattr(patients, 'patientList') else patients
 
-        # 1. Collect Raw Data
         for patient in patient_list:
             times, values, masks = extract_temporal_data(patient, feature_names)
             if times is None: continue
             
             s_vec = static_encoder.transform(patient)
-            
             self.static_data.append(torch.tensor(s_vec, dtype=torch.float32))
             
-            # Note: We store the RAW values initially
             self.data.append({
                 'times': times, 
                 'values': values, 
@@ -149,7 +124,6 @@ class HybridDataset(Dataset):
                 for v, m in zip(v_vec, m_vec):
                     if m > 0: all_values.append(v)
 
-        # 2. Compute Normalization Stats (Mean/Std)
         if normalization_stats is None:
             all_values = np.array(all_values)
             self.mean = np.mean(all_values) if len(all_values) > 0 else 0.0
@@ -158,22 +132,19 @@ class HybridDataset(Dataset):
             self.mean = normalization_stats['mean']
             self.std = normalization_stats['std']
 
-        # 3. Process Tensors: Create BOTH Normalized and Raw versions
         for i in range(len(self.data)):
             raw_vals = self.data[i]['values']
             masks = self.data[i]['masks']
             
-            # Create Normalized Copy (for RNN)
             norm_values = []
             for v_vec, m_vec in zip(raw_vals, masks):
                 norm = [(v - self.mean)/self.std if m>0 else 0.0 for v, m in zip(v_vec, m_vec)]
                 norm_values.append(norm)
             
-            # Store everything
             self.data[i] = {
                 'times': torch.tensor(self.data[i]['times'], dtype=torch.float32),
-                'norm_values': torch.tensor(norm_values, dtype=torch.float32), # For RNN Input
-                'raw_values': torch.tensor(raw_vals, dtype=torch.float32),     # For TabPFN Reward
+                'norm_values': torch.tensor(norm_values, dtype=torch.float32), 
+                'raw_values': torch.tensor(raw_vals, dtype=torch.float32),     
                 'masks': torch.tensor(masks, dtype=torch.float32)
             }
 
@@ -215,11 +186,6 @@ def hybrid_collate_fn(batch):
     return temporal_batch, torch.tensor(label_list, dtype=torch.float32), torch.stack(static_list)
 
 def extract_last_raw_values(t_data):
-    """
-    Extracts the LAST observed values from the RAW data tensor.
-    This ensures TabPFN sees the original distribution (e.g. Creatinine=1.2)
-    instead of Z-scores.
-    """
     vals = t_data['raw_values'].to(DEVICE)
     masks = t_data['masks'].to(DEVICE)
     batch_last_vals = []
@@ -230,16 +196,12 @@ def extract_last_raw_values(t_data):
             f_vals = vals[i, :, f_idx]
             f_mask = masks[i, :, f_idx]
             valid_idx = torch.where(f_mask > 0)[0]
-            
             if len(valid_idx) > 0:
                 last_v = f_vals[valid_idx[-1]]
             else:
-                # For raw data, 0.0 might be misleading if 0 is a valid value (e.g. Temp).
-                # But TabPFN handles sparse data well.
                 last_v = torch.tensor(0.0, device=DEVICE) 
             patient_last.append(last_v)
         batch_last_vals.append(torch.stack(patient_last))
-        
     return torch.stack(batch_last_vals)
 
 # ==============================================================================
@@ -249,28 +211,31 @@ def extract_last_raw_values(t_data):
 class GaussianRNNPolicy(nn.Module):
     def __init__(self, input_dim, hidden_dim, z_dim=12):
         super().__init__()
+        # Increased capacity
         self.rnn_cell = TimeEmbeddedRNNCell(input_dim, hidden_dim)
+        self.fc_shared = nn.Linear(hidden_dim, hidden_dim)
+        self.dropout = nn.Dropout(0.1)
         
         self.mu_head = nn.Linear(hidden_dim, z_dim)
         self.log_sigma_head = nn.Linear(hidden_dim, z_dim)
         
-        # Init sigma small
+        # Init sigma small but not too small
         nn.init.constant_(self.log_sigma_head.weight, 0)
         nn.init.constant_(self.log_sigma_head.bias, -1.0) 
 
     def forward(self, batch_data):
-        # CRITICAL: RNN uses NORMALIZED values to learn effectively
         h = self.rnn_cell(
             batch_data['times'].to(DEVICE),
             batch_data['norm_values'].to(DEVICE), 
             batch_data['masks'].to(DEVICE),
             batch_data['lengths'].to(DEVICE)
         )
+        h = self.dropout(F.relu(self.fc_shared(h)))
         
         mu = self.mu_head(h)
         log_sigma = self.log_sigma_head(h)
-        sigma = torch.exp(torch.clamp(log_sigma, min=-5, max=0.5))
-        
+        # Limit sigma range to prevent explosion
+        sigma = torch.exp(torch.clamp(log_sigma, min=-3, max=0))
         return mu, sigma
     
     def get_deterministic_embedding(self, batch_data):
@@ -278,82 +243,96 @@ class GaussianRNNPolicy(nn.Module):
         return mu
 
 # ==============================================================================
-# 3. RL Training (REINFORCE) with Feature Mixing
+# 3. RL Training (REINFORCE with Differential Reward)
 # ==============================================================================
 
-def train_rnn_rl(rnn_policy, train_loader, tabpfn, epochs=20, alpha_baseline=0.1):
-    optimizer = torch.optim.Adam(rnn_policy.parameters(), lr=0.0001)
-    baseline = 0.6 
+def train_rnn_rl(rnn_policy, train_loader, env_tabpfn, base_tabpfn, epochs=20):
+    """
+    env_tabpfn: The 'Judge' trained on [Last, Static, Z] (with dropout applied during training)
+    base_tabpfn: A frozen baseline trained ONLY on [Last, Static]
+    """
+    optimizer = torch.optim.Adam(rnn_policy.parameters(), lr=0.0003)
     
-    print(f"  [RL] Starting Fine-Tuning for {epochs} epochs...")
+    print(f"  [RL] Starting Fine-Tuning (Differential Reward)...")
     
     for epoch in range(epochs):
         rnn_policy.train()
         epoch_rewards = []
-        epoch_loss = 0
+        epoch_deltas = []
         
         for batch_idx, (t_data, labels, s_data) in enumerate(train_loader):
             optimizer.zero_grad()
             
-            # --- A. Agent Acts ---
+            # 1. Action
             mu, sigma = rnn_policy(t_data)
             dist_normal = dist.Normal(mu, sigma)
             z_action = dist_normal.sample()
             log_prob = dist_normal.log_prob(z_action).sum(dim=1)
             
-            # --- B. Environment (TabPFN) Rewards ---
+            # 2. Get Features
             with torch.no_grad():
-                # CRITICAL: Use RAW values for the Reward Signal
                 last_vals = extract_last_raw_values(t_data).cpu().numpy()
                 static_vals = s_data.numpy()
                 z_vals = z_action.cpu().numpy()
-                
-                # Combine: [Raw_Last, Raw_Static, RNN_Embedding]
-                X_batch = np.hstack([last_vals, static_vals, z_vals])
                 y_true = labels.numpy().astype(int)
+
+                # 3. Calculate Differential Reward
+                # Baseline Probability (P_base) using only Last + Static
+                X_base = np.hstack([last_vals, static_vals])
+                p_base = base_tabpfn.predict_proba(X_base)[:, 1] # Prob of class 1
+
+                # Agent Probability (P_env) using Last + Static + Z
+                X_env = np.hstack([last_vals, static_vals, z_vals])
+                p_env = env_tabpfn.predict_proba(X_env)[:, 1]    # Prob of class 1
                 
-                probs = tabpfn.predict_proba(X_batch)
-                
+                # Reward: We want P_env to be CLOSER to y_true than P_base
                 rewards = []
+                deltas = []
                 for i in range(len(y_true)):
-                    r = probs[i, y_true[i]]
-                    if y_true[i] == 1:
-                         r = r * 2.0
+                    # Direction of improvement needed
+                    target = 1.0 if y_true[i] == 1 else 0.0
+                    
+                    # Distance improvement
+                    # If target=1: Reward is (p_env - p_base)
+                    # If target=0: Reward is (p_base - p_env) -> because lower is better
+                    improvement = (p_env[i] - p_base[i]) if target == 1 else (p_base[i] - p_env[i])
+                    
+                    # Scale reward to make gradients meaningful
+                    # We add a small bonus for simply being correct
+                    r = (improvement * 10.0) 
+                    
                     rewards.append(r)
-                
+                    deltas.append(improvement)
+
                 rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
+
+            # 4. Update
+            # No baseline subtraction needed here because the reward IS a delta already
+            loss = -(log_prob * rewards).mean()
             
-            # --- C. Update ---
-            batch_avg_reward = rewards.mean().item()
-            epoch_rewards.append(batch_avg_reward)
-            
-            baseline = (1 - alpha_baseline) * baseline + alpha_baseline * batch_avg_reward
-            advantage = rewards - baseline
-            
-            loss = -(log_prob * advantage).mean()
+            # Entropy regularization
             entropy = dist_normal.entropy().mean()
-            loss = loss - 0.005 * entropy
+            loss = loss - 0.01 * entropy
             
             loss.backward()
             torch.nn.utils.clip_grad_norm_(rnn_policy.parameters(), max_norm=1.0)
             optimizer.step()
             
-            epoch_loss += loss.item()
+            epoch_rewards.append(rewards.mean().item())
+            epoch_deltas.append(np.mean(deltas))
 
-        avg_r = np.mean(epoch_rewards)
         if (epoch+1) % 5 == 0:
-            print(f"    Epoch {epoch+1}/{epochs} | Loss: {epoch_loss/len(train_loader):.4f} | Avg Reward: {avg_r:.4f} | Base: {baseline:.4f}")
+            print(f"    Epoch {epoch+1:02d} | Avg Delta Prob: {np.mean(epoch_deltas):.5f} | Avg Reward: {np.mean(epoch_rewards):.4f}")
 
     return rnn_policy
 
 # ==============================================================================
-# 4. Feature Getter (Corrected)
+# 4. Feature Getters
 # ==============================================================================
 
-def get_triple_features(model, loader, deterministic=True):
+def get_features_for_fitting(model, loader, deterministic=True):
     model.eval()
-    features = []
-    labels_out = []
+    last_list, static_list, z_list, label_list = [], [], [], []
     
     with torch.no_grad():
         for t_data, labels, s_data in loader:
@@ -362,33 +341,27 @@ def get_triple_features(model, loader, deterministic=True):
             else:
                 mu, sigma = model(t_data)
                 z = dist.Normal(mu, sigma).sample().cpu().numpy()
-                
-            s = s_data.numpy()
-            # CRITICAL: Use Raw Values here too!
-            last_vals = extract_last_raw_values(t_data).cpu().numpy()
             
-            combined = np.hstack([last_vals, s, z])
-            features.append(combined)
-            labels_out.extend(labels.numpy())
+            last_list.append(extract_last_raw_values(t_data).cpu().numpy())
+            static_list.append(s_data.numpy())
+            z_list.append(z)
+            label_list.extend(labels.numpy())
             
-    return np.vstack(features), np.array(labels_out)
+    return np.vstack(last_list), np.vstack(static_list), np.vstack(z_list), np.array(label_list)
 
 # ==============================================================================
-# 5. Main Execution
+# 5. Main
 # ==============================================================================
 
 def main():
     print("="*80)
-    print("STABLE DEEP RL: Warm-Up -> Frozen Judge -> RL Fine-Tuning")
-    print("with Corrected Data Pipeline (Raw for TabPFN, Norm for RNN)")
+    print("STABLE DEEP RL V2: Judge Dropout + Differential Rewards")
     print("="*80)
 
     patients = load_and_prepare_patients()
     temporal_feats = get_all_temporal_features(patients)
     encoder = SimpleStaticEncoder(FIXED_FEATURES)
     encoder.fit(patients.patientList)
-
-    print(f"Features: {len(temporal_feats)} Temporal, {len(FIXED_FEATURES)} Static")
 
     metrics_rl = {'auc': [], 'auc_pr': []}
     metrics_base = {'auc': [], 'auc_pr': []}
@@ -397,27 +370,27 @@ def main():
         print(f"\n--- Fold {fold} ---")
         train_p_obj, val_p_obj = split_patients_train_val(train_full, val_ratio=0.1, seed=42+fold)
         
-        # 1. Prepare Datasets (Handles both Raw and Norm internally)
         train_ds = HybridDataset(train_p_obj.patientList, temporal_feats, encoder)
         stats = train_ds.get_normalization_stats()
-        val_ds = HybridDataset(val_p_obj.patientList, temporal_feats, encoder, stats)
+        # val_ds = HybridDataset(val_p_obj.patientList, temporal_feats, encoder, stats) # Unused
         test_ds = HybridDataset(test_p.patientList, temporal_feats, encoder, stats)
 
         train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=hybrid_collate_fn)
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
 
-        rnn_policy = GaussianRNNPolicy(len(temporal_feats), hidden_dim=16, z_dim=12).to(DEVICE)
+        # Increased hidden dim to 64
+        rnn_policy = GaussianRNNPolicy(len(temporal_feats), hidden_dim=64, z_dim=12).to(DEVICE)
 
-        # ==========================================
-        # STAGE 1: SUPERVISED WARM-UP (Using Norm Values via RNN)
-        # ==========================================
-        print("  [Stage 1] Supervised Warm-Up (10 Epochs)...")
+        # --------------------------------------------------------
+        # STAGE 1: SUPERVISED WARM-UP
+        # --------------------------------------------------------
+        print("  [Stage 1] Supervised Warm-Up (15 Epochs)...")
         warmup_head = nn.Linear(12, 1).to(DEVICE)
         warmup_opt = torch.optim.Adam(list(rnn_policy.parameters()) + list(warmup_head.parameters()), lr=0.001)
         bce = nn.BCELoss()
-
+        
         rnn_policy.train()
-        for epoch in range(10):
+        for epoch in range(15):
             for t_data, labels, s_data in train_loader:
                 warmup_opt.zero_grad()
                 mu, _ = rnn_policy(t_data) 
@@ -426,71 +399,77 @@ def main():
                 loss.backward()
                 warmup_opt.step()
 
-        # ==========================================
-        # STAGE 2: FIT TABPFN ENVIRONMENT ("THE JUDGE")
-        # ==========================================
-        print("  [Stage 2] Fitting TabPFN Environment...")
-        # Get [Raw_Last, Raw_Static, Z_warm]
-        X_train_warm, y_train_warm = get_triple_features(rnn_policy, train_loader, deterministic=True)
+        # --------------------------------------------------------
+        # STAGE 2: FIT ENVIRONMENTS (JUDGE & BASELINE)
+        # --------------------------------------------------------
+        print("  [Stage 2] Fitting Environments...")
+        last_tr, stat_tr, z_tr, y_tr = get_features_for_fitting(rnn_policy, train_loader)
         
-        tabpfn_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu') 
-        tabpfn_env.fit(X_train_warm, y_train_warm)
+        # A. Baseline Judge: Sees ONLY [Last, Static]
+        X_base = np.hstack([last_tr, stat_tr])
+        base_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+        base_tabpfn.fit(X_base, y_tr)
+        
+        # B. RL Judge: Sees [Last, Static, Z] with DATA AUGMENTATION (Dropout)
+        # We concatenate two versions of the data:
+        # 1. Full Data: [Last, Static, Z]
+        # 2. Masked Data: [Zeros, Static, Z] -> Forces Judge to value Z
+        
+        X_full = np.hstack([last_tr, stat_tr, z_tr])
+        
+        # Create masked version (Masking Last values)
+        last_masked = np.zeros_like(last_tr) # Set Last to 0
+        X_masked = np.hstack([last_masked, stat_tr, z_tr])
+        
+        # Combine for training the Judge
+        X_judge_train = np.vstack([X_full, X_masked])
+        y_judge_train = np.concatenate([y_tr, y_tr])
+        
+        # print(f"    Judge Training Size: {X_judge_train.shape} (Augmented)")
+        env_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+        env_tabpfn.fit(X_judge_train, y_judge_train)
 
-        # ==========================================
+        # --------------------------------------------------------
         # STAGE 3: RL FINE-TUNING
-        # ==========================================
-        print("  [Stage 3] RL Optimization (Refining Z)...")
-        rnn_policy = train_rnn_rl(rnn_policy, train_loader, tabpfn_env, epochs=20)
+        # --------------------------------------------------------
+        rnn_policy = train_rnn_rl(rnn_policy, train_loader, env_tabpfn, base_tabpfn, epochs=20)
 
-        # ==========================================
-        # FINAL EVALUATION
-        # ==========================================
-        print("  [Final] Evaluating RL Agent...")
+        # --------------------------------------------------------
+        # EVALUATION
+        # --------------------------------------------------------
+        print("  [Final] Evaluating...")
+        last_te, stat_te, z_te, y_te = get_features_for_fitting(rnn_policy, test_loader)
         
-        final_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
-        X_train_final, y_train_final = get_triple_features(rnn_policy, train_loader, deterministic=True)
-        X_test_final, y_test_final = get_triple_features(rnn_policy, test_loader, deterministic=True)
+        # 1. Baseline Performance
+        X_te_base = np.hstack([last_te, stat_te])
+        probs_base = base_tabpfn.predict_proba(X_te_base)[:, 1]
+        auc_base = roc_auc_score(y_te, probs_base)
+        bp, br, _ = precision_recall_curve(y_te, probs_base)
+        pr_base = auc(br, bp)
         
-        final_tabpfn.fit(X_train_final, y_train_final)
-        y_prob = final_tabpfn.predict_proba(X_test_final)[:, 1]
+        # 2. RL Performance (Training a fresh Final Classifier on refined Z)
+        # Ideally, we use the Environment Judge, but let's re-fit a clean one to be fair
+        final_clf = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+        # Get refined Z on train
+        last_tr_new, stat_tr_new, z_tr_new, y_tr_new = get_features_for_fitting(rnn_policy, train_loader)
+        X_tr_final = np.hstack([last_tr_new, stat_tr_new, z_tr_new])
+        X_te_final = np.hstack([last_te, stat_te, z_te])
         
-        auc_score = roc_auc_score(y_test_final, y_prob)
-        precision, recall, _ = precision_recall_curve(y_test_final, y_prob)
-        pr_auc = auc(recall, precision)
+        final_clf.fit(X_tr_final, y_tr_new)
+        probs_rl = final_clf.predict_proba(X_te_final)[:, 1]
         
-        metrics_rl['auc'].append(auc_score)
-        metrics_rl['auc_pr'].append(pr_auc)
-        print(f"  Fold {fold} RL Result | AUC: {auc_score:.4f} | PR-AUC: {pr_auc:.4f}")
+        auc_rl = roc_auc_score(y_te, probs_rl)
+        rp, rr, _ = precision_recall_curve(y_te, probs_rl)
+        pr_rl = auc(rr, rp)
 
-        # ==========================================
-        # BASELINE (Raw Data Pipeline)
-        # ==========================================
-        print("  [Baseline] Evaluating Standard Last+Static (Pandas Pipeline)...")
+        metrics_rl['auc'].append(auc_rl)
+        metrics_rl['auc_pr'].append(pr_rl)
+        metrics_base['auc'].append(auc_base)
+        metrics_base['auc_pr'].append(pr_base)
         
-        df_train_temp = train_p_obj.getMeasuresBetween(
-            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True).drop(columns=["subject_id", "hadm_id", "stay_id"])
-        
-        df_test_temp = test_p.getMeasuresBetween(
-            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True).drop(columns=["subject_id", "hadm_id", "stay_id"])
-
-        df_train_enc, df_test_enc, _ = encodeCategoricalData(df_train_temp, df_test_temp)
-
-        X_tr_b = df_train_enc.drop(columns=["akd"]).fillna(0)
-        y_tr_b = df_train_enc["akd"]
-        X_te_b = df_test_enc.drop(columns=["akd"]).fillna(0)
-        y_te_b = df_test_enc["akd"]
-
-        base_pfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
-        base_pfn.fit(X_tr_b, y_tr_b)
-        y_prob_b = base_pfn.predict_proba(X_te_b)[:, 1]
-        
-        b_auc = roc_auc_score(y_te_b, y_prob_b)
-        bp, br, _ = precision_recall_curve(y_te_b, y_prob_b)
-        b_pr = auc(br, bp)
-        
-        metrics_base['auc'].append(b_auc)
-        metrics_base['auc_pr'].append(b_pr)
-        print(f"  Fold {fold} Baseline  | AUC: {b_auc:.4f} | PR-AUC: {b_pr:.4f}")
+        print(f"  Fold {fold} Result:")
+        print(f"    Baseline : AUC {auc_base:.4f} | PR-AUC {pr_base:.4f}")
+        print(f"    RL Agent : AUC {auc_rl:.4f} | PR-AUC {pr_rl:.4f}  <-- {'IMPROVED' if auc_rl > auc_base else 'Same/Worse'}")
 
     print("\n" + "="*80)
     print("FINAL SUMMARY")
@@ -501,7 +480,6 @@ def main():
 
     print_stat("AUC", metrics_rl['auc'], metrics_base['auc'])
     print_stat("AUC-PR", metrics_rl['auc_pr'], metrics_base['auc_pr'])
-    print("="*80)
 
 if __name__ == "__main__":
     main()
