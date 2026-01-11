@@ -47,8 +47,9 @@ from sklearn.metrics import (
 )
 if sys.platform == "darwin":
     sys.path.append("/Users/anhnd/CodingSpace/Python/PREDKIT")
-else:
+else:   
     sys.path.append("/home/anhnda/PREKIT")
+print(sys.platform)
 from constants import NULLABLE_MEASURES
 from utils.class_patient import Patients
 from utils.prepare_data import trainTestPatients
