@@ -591,7 +591,7 @@ def main():
 
         # Train
         print("\nTraining...")
-        model = train_model(model, train_loader, criterion, optimizer, num_epochs=50)
+        model = train_model(model, train_loader, criterion, optimizer, num_epochs=100)
 
         # Evaluate
         print("\nEvaluating...")
