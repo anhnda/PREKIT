@@ -1,7 +1,7 @@
 """
-TRIPLE HYBRID MODEL: [Learned Trend + Last Value + Static Context] -> XGBoost
+TRIPLE HYBRID MODEL: [Learned Trend + Last Value + Static Context] -> TabPFN
 vs
-STRONG BASELINE: [Last Value + Static Context] -> XGBoost
+STRONG BASELINE: [Last Value + Static Context] -> TabPFN
 
 Features:
 - Categorical Encoding (for Gender/Race)
@@ -19,9 +19,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from xgboost import XGBClassifier
+from tabpfn import TabPFNClassifier
 import random
-
+import os
 from sklearn.metrics import (
     accuracy_score,
     recall_score,
@@ -32,9 +32,6 @@ from sklearn.metrics import (
     precision_recall_curve,
     auc,
 )
-import random
-import os
-
 def seed_everything(seed=42):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -49,6 +46,7 @@ PT = "/Users/anhnd/CodingSpace/Python/PREDKIT"
 if sys.platform != "darwin":
     PT = "/home/anhnda/PREKIT"
 sys.path.append(PT)
+
 
 from constants import NULLABLE_MEASURES
 from utils.class_patient import Patients
@@ -71,7 +69,7 @@ FIXED_FEATURES = [
 ]
 
 # ==============================================================================
-# 1. Helpers: Encoder & Gated Head
+# 1. Helpers: Encoder & TabPFNMimic
 # ==============================================================================
 
 class SimpleStaticEncoder:
@@ -110,29 +108,57 @@ class SimpleStaticEncoder:
             vec.append(numeric_val)
         return vec
 
-class GatedDecisionHead(nn.Module):
-    """Mimics XGBoost logic for RNN pre-training"""
-    def __init__(self, input_dim, hidden_dim=64, dropout=0.3):
-        super(GatedDecisionHead, self).__init__()
-        self.gate = nn.Sequential(nn.Linear(input_dim, input_dim), nn.Sigmoid())
-        self.fc1 = nn.Linear(input_dim, hidden_dim * 2) 
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim * 2)
-        self.dropout = nn.Dropout(dropout)
-        self.final = nn.Linear(hidden_dim, 1)
-
-    def forward(self, x):
-        mask = self.gate(x)
-        x = x * mask 
-        out = self.fc1(x)
-        out = F.glu(out, dim=-1)
-        out = self.dropout(out)
-        residual = out
-        out = self.fc2(out)
-        out = F.glu(out, dim=-1)
-        out = out + residual
-        return torch.sigmoid(self.final(out))
+class PrototypeMetricHead(nn.Module):
+    """
+    Mimics TabPFN's reliance on Metric Space (Euclidean/Distance).
+    Instead of hyperplanes (XGBoost) or Batch Attention (Transformer),
+    this forces the RNN to learn embeddings where class clusters are tight.
     
-
+    It learns 2 'Prototypes' (Centroids). 
+    Prediction is based on which prototype the sample is closer to.
+    """
+    def __init__(self, input_dim, hidden_dim=64, dropout=0.3):
+        super(PrototypeMetricHead, self).__init__()
+        
+        # 1. Project to a metric space
+        self.project = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim) # Final embedding space
+        )
+        
+        # 2. Learnable Prototypes (Class 0 centroid and Class 1 centroid)
+        # Shape: [2, hidden_dim]
+        self.prototypes = nn.Parameter(torch.randn(2, hidden_dim))
+        
+    def forward(self, x):
+        # x: [Batch, Input_Dim]
+        
+        # Map to metric space: [Batch, Hidden_Dim]
+        embeddings = self.project(x)
+        
+        # Normalize embeddings and prototypes to use Cosine-like distance
+        # (Helps stability significantly compared to pure Euclidean)
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        prototypes = F.normalize(self.prototypes, p=2, dim=1)
+        
+        # Calculate Distance (Similarity) to Class 1 Prototype
+        # Dot product with Class 1 vector
+        # Output shape: [Batch, 1]
+        
+        # We want: High Score if close to Proto 1, Low Score if close to Proto 0
+        # Sim_1 = x . P1
+        # Sim_0 = x . P0
+        # Logits = Sim_1 - Sim_0
+        
+        sim_0 = torch.matmul(embeddings, prototypes[0].unsqueeze(1))
+        sim_1 = torch.matmul(embeddings, prototypes[1].unsqueeze(1))
+        
+        logits = sim_1 - sim_0
+        
+        return torch.sigmoid(logits)
 # ==============================================================================
 # 2. Dataset (Returns Temporal, Label, AND Static)
 # ==============================================================================
@@ -235,16 +261,19 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
     rnn_dim = model.rnn_cell.hidden_dim
     static_dim = len(FIXED_FEATURES)
     
-    # Pre-train using [RNN + Static] -> Gated Head
-    temp_head = GatedDecisionHead(input_dim=rnn_dim + static_dim).to(DEVICE)
-    full_optimizer = torch.optim.Adam(list(model.parameters()) + list(temp_head.parameters()), lr=0.001)
+    # Pre-train using [RNN + Static] -> TabPFNMimic
+    temp_head = PrototypeMetricHead(
+        input_dim=rnn_dim + static_dim, 
+        hidden_dim=64
+    ).to(DEVICE)
     
+    full_optimizer = torch.optim.Adam(list(model.parameters()) + list(temp_head.parameters()), lr=0.001)
     best_auc = 0
     best_state = None
     patience = 6
     counter = 0
     
-    print("  [Stage 1] Pre-training RNN with Gated Head...")
+    print("  [Stage 1] Pre-training RNN with TabPFNMimic...")
     for epoch in range(epochs):
         model.train()
         temp_head.train()
@@ -370,13 +399,13 @@ def main():
         val_ds = HybridDataset(val_p, temporal_feats, encoder, stats)
         test_ds = HybridDataset(test_p_list, temporal_feats, encoder, stats)
         
-        train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=hybrid_collate_fn)
-        val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
-        test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
+        train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, collate_fn=hybrid_collate_fn)
+        val_loader = DataLoader(val_ds, batch_size=64, shuffle=False, collate_fn=hybrid_collate_fn)
+        test_loader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=hybrid_collate_fn)
         
         # 2. Stage 1: RNN Training
         rnn = RNNFeatureExtractor(len(temporal_feats), hidden_dim=48).to(DEVICE)
-        opt = torch.optim.Adam(rnn.parameters(), lr=0.001)
+        opt = torch.optim.Adam(rnn.parameters(), lr=0.0005)
         rnn = train_rnn_extractor(rnn, train_loader, val_loader, nn.BCELoss(), opt)
         
         # 3. Stage 2: Triple Feature Fusion
@@ -385,15 +414,12 @@ def main():
         X_val, y_val = get_triple_features(rnn, val_loader)
         X_test, y_test = get_triple_features(rnn, test_loader)
         
-        # 4. Stage 3: XGBoost Training
+        # 4. Stage 3: TabPFN Training
         ratio = np.sum(y_train==0) / (np.sum(y_train==1) + 1e-6)
         
-        clf = XGBClassifier(
-            n_estimators=1000, max_depth=4, learning_rate=0.03,
-            subsample=0.8, colsample_bytree=0.8, scale_pos_weight=ratio, 
-            early_stopping_rounds=30, eval_metric='auc', random_state=42
-        )
-        clf.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        clf = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+
+        clf.fit(X_train, y_train)
         
         # 5. Hybrid Evaluation
         y_prob = clf.predict_proba(X_test)[:, 1]
@@ -413,9 +439,9 @@ def main():
         ax1.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {metrics_hybrid['auc'][-1]:.3f})")
         
         # ======================================================================
-        # BASELINE: Standard XGBoost (Last Values + Static)
+        # BASELINE: Standard TabPFN (Last Values + Static)
         # ======================================================================
-        print("  [Baseline] Training Standard XGBoost (Last + Static)...")
+        print("  [Baseline] Training Standard TabPFN (Last + Static)...")
         
         # Extract "Last Values"
         df_train_temp = train_p_obj.getMeasuresBetween(
@@ -434,13 +460,11 @@ def main():
         X_te_b = df_test_enc.drop(columns=["akd"]).fillna(0)
         y_te_b = df_test_enc["akd"]
         
-        xgb_base = XGBClassifier(
-            n_estimators=500, max_depth=6, learning_rate=0.05, 
-            scale_pos_weight=ratio, eval_metric='auc', random_state=42
-        )
-        xgb_base.fit(X_tr_b, y_tr_b)
+        model_base  = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+
+        model_base.fit(X_tr_b, y_tr_b)
         
-        y_prob_b = xgb_base.predict_proba(X_te_b)[:, 1]
+        y_prob_b = model_base.predict_proba(X_te_b)[:, 1]
         y_pred_b = (y_prob_b > 0.5).astype(int)
         
         tn, fp, _, _ = confusion_matrix(y_te_b, y_pred_b).ravel()
