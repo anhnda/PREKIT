@@ -14,3 +14,11 @@ Accuracy        | Hybrid: 0.7438 ± 0.0221  vs  Baseline: 0.7628 ± 0.0185
 Specificity     | Hybrid: 0.7719 ± 0.0237  vs  Baseline: 0.8265 ± 0.0222                  
 Precision       | Hybrid: 0.6651 ± 0.0233  vs  Baseline: 0.7131 ± 0.0219                  
 Recall          | Hybrid: 0.7005 ± 0.0631  vs  Baseline: 0.6646 ± 0.0548  
+
+TS_ConcatLateOnly.py
+FINAL RESULTS SUMMARY
+================================================================================
+AUC             | Hybrid: 0.8159 ± 0.0089  vs  Baseline: 0.8091 ± 0.0189
+AUC-PR          | Hybrid: 0.7370 ± 0.0224  vs  Baseline: 0.7324 ± 0.0336
+Accuracy        | Hybrid: 0.7396 ± 0.0110  vs  Baseline: 0.7471 ± 0.0286
+Specificity     | Hybrid: 0.7500 ± 0.0375  vs  Baseline: 0.8102 ± 0.0441
