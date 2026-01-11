@@ -30,6 +30,7 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
     precision_recall_curve,
+    average_precision_score,
     auc,
 )
 import random
@@ -273,8 +274,10 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
                     all_preds.extend(preds.cpu().numpy())
                     all_lbls.extend(labels.cpu().numpy())
             
-            auc_val = roc_auc_score(all_lbls, all_preds)
-            print(f"    Epoch {epoch+1} Val AUC: {auc_val:.4f}")
+            aupr = average_precision_score(all_lbls, all_preds)
+            auc = roc_auc_score(all_lbls, all_preds)
+            auc_val = aupr
+            print(f"    Epoch {epoch+1} Val AUPR: {auc_val:.4f}")
             
             if auc_val > best_auc:
                 best_auc = auc_val
