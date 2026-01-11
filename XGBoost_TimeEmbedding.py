@@ -32,7 +32,7 @@ sys.path.append(PT)
 
 from constants import NULLABLE_MEASURES
 from utils.class_patient import Patients
-from utils.prepare_data import trainTestPatients
+from utils.prepare_data import trainTestPatients, encodeCategoricalData
 
 # Import from TimeEmbeddingVal
 from TimeEmbeddingVal import (
@@ -161,11 +161,12 @@ def extract_embeddings(model, data_loader):
 
 def main():
     print("="*80)
-    print("HYBRID: TIME-EMBEDDED RNN + XGBOOST")
+    print("COMPARISON: XGBOOST ON LAST FEATURES VS TIME-EMBEDDED RNN + XGBOOST")
     print("="*80)
 
     patients = load_and_prepare_patients()
 
+    # Metrics for TimeEmbedding + XGBoost
     accuracy_scores = []
     precision_scores = []
     recall_scores = []
@@ -173,7 +174,15 @@ def main():
     specificity_scores = []
     auc_pr_scores = []
 
-    plt.figure(figsize=(10, 8))
+    # Metrics for XGBoost on Last Features (baseline)
+    accuracy_scores_last = []
+    precision_scores_last = []
+    recall_scores_last = []
+    auc_scores_last = []
+    specificity_scores_last = []
+    auc_pr_scores_last = []
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
     all_temporal_features = get_all_temporal_features(patients)
     input_dim = len(all_temporal_features)
@@ -249,7 +258,7 @@ def main():
 
         xgb_model.fit(X_train, y_train)
 
-        # Evaluate
+        # Evaluate TimeEmbedding + XGBoost
         y_pred = xgb_model.predict(X_test)
         y_pred_proba = xgb_model.predict_proba(X_test)[:, 1]
 
@@ -264,24 +273,103 @@ def main():
         auc_pr_scores.append(auc(recall_vals, precision_vals))
 
         fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
-        plt.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {auc_scores[-1]:.3f})")
+        ax1.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {auc_scores[-1]:.3f})")
 
-        print(f"\nFold {fold} - AUC: {auc_scores[-1]:.3f}, Accuracy: {accuracy_scores[-1]:.3f}")
+        print(f"\n[TimeEmbedding + XGBoost] Fold {fold} - AUC: {auc_scores[-1]:.3f}, Accuracy: {accuracy_scores[-1]:.3f}")
 
-    # Plot
-    plt.plot([0, 1], [0, 1], linestyle="--", color="navy", lw=2, label="Random")
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title("ROC Curves - Time-Embedded RNN + XGBoost")
-    plt.legend(loc="lower right")
-    plt.grid(alpha=0.3)
-    plt.savefig("result/roc_timeembed_xgboost.png", dpi=300, bbox_inches="tight")
+        # ========================================================================
+        # BASELINE: XGBoost on Last Features (same data split!)
+        # ========================================================================
+        print(f"\n[Baseline] Training XGBoost on Last Features...")
+
+        # Get last features from same patients
+        FIXED_FEATURES = [
+            "age", "gender", "race", "chronic_pulmonary_disease", "ckd_stage",
+            "congestive_heart_failure", "dka_type", "history_aci", "history_ami",
+            "hypertension", "liver_disease", "macroangiopathy", "malignant_cancer",
+            "microangiopathy", "uti", "oasis", "saps2", "sofa",
+            "mechanical_ventilation", "use_NaHCO3", "preiculos", "gcs_unable", "egfr"
+        ]
+        ID_COLUMNS = ["subject_id", "hadm_id", "stay_id"]
+        LABEL_COLUMN = "akd"
+
+        df_train_last = train_patients.getMeasuresBetween(
+            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+        ).drop(columns=ID_COLUMNS)
+
+        df_val_last = val_patients.getMeasuresBetween(
+            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+        ).drop(columns=ID_COLUMNS)
+
+        df_test_last = test_patients.getMeasuresBetween(
+            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+        ).drop(columns=ID_COLUMNS)
+
+        # Filter temporal features
+        for df in [df_train_last, df_val_last, df_test_last]:
+            for col in FIXED_FEATURES:
+                if col in df.columns:
+                    df.drop(columns=[col], inplace=True)
+
+        # Encode
+        df_train_last, df_val_last, _ = encodeCategoricalData(df_train_last, df_val_last)
+        df_train_last, df_test_last, _ = encodeCategoricalData(df_train_last, df_test_last)
+
+        # Prepare data
+        X_train_last = df_train_last.drop(columns=[LABEL_COLUMN]).fillna(0)
+        y_train_last = df_train_last[LABEL_COLUMN]
+        X_test_last = df_test_last.drop(columns=[LABEL_COLUMN]).fillna(0)
+        y_test_last = df_test_last[LABEL_COLUMN]
+
+        # Train XGBoost
+        xgb_baseline = XGBClassifier(
+            n_estimators=200, max_depth=6, learning_rate=0.1,
+            subsample=0.8, colsample_bytree=0.8,
+            reg_alpha=0.1, reg_lambda=1.0, random_state=42,
+            eval_metric='auc', use_label_encoder=False, verbosity=0
+        )
+        xgb_baseline.fit(X_train_last, y_train_last)
+
+        # Evaluate baseline
+        y_pred_last = xgb_baseline.predict(X_test_last)
+        y_pred_proba_last = xgb_baseline.predict_proba(X_test_last)[:, 1]
+
+        tn_last, fp_last, _, _ = confusion_matrix(y_test_last, y_pred_last).ravel()
+        precision_vals_last, recall_vals_last, _ = precision_recall_curve(y_test_last, y_pred_proba_last)
+
+        accuracy_scores_last.append(accuracy_score(y_test_last, y_pred_last))
+        specificity_scores_last.append(tn_last / (tn_last + fp_last))
+        precision_scores_last.append(precision_score(y_test_last, y_pred_last, zero_division=0))
+        recall_scores_last.append(recall_score(y_test_last, y_pred_last))
+        auc_scores_last.append(roc_auc_score(y_test_last, y_pred_proba_last))
+        auc_pr_scores_last.append(auc(recall_vals_last, precision_vals_last))
+
+        fpr_last, tpr_last, _ = roc_curve(y_test_last, y_pred_proba_last)
+        ax2.plot(fpr_last, tpr_last, lw=2, label=f"Fold {fold} (AUC = {auc_scores_last[-1]:.3f})")
+
+        print(f"[Baseline Last Features] Fold {fold} - AUC: {auc_scores_last[-1]:.3f}, Accuracy: {accuracy_scores_last[-1]:.3f}")
+
+    # Configure both subplots
+    for ax in [ax1, ax2]:
+        ax.plot([0, 1], [0, 1], linestyle="--", color="navy", lw=2, label="Random")
+        ax.set_xlim([0.0, 1.0])
+        ax.set_ylim([0.0, 1.05])
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+        ax.legend(loc="lower right")
+        ax.grid(alpha=0.3)
+
+    ax1.set_title("Time-Embedded RNN + XGBoost")
+    ax2.set_title("XGBoost on Last Features (Baseline)")
+
+    plt.tight_layout()
+    plt.savefig("result/roc_comparison_timeembed_vs_baseline.png", dpi=300, bbox_inches="tight")
+    print("\nSaved comparison plot to: result/roc_comparison_timeembed_vs_baseline.png")
     plt.show()
 
+    # Print summaries
     print("\n" + "="*80)
-    print("RESULTS SUMMARY (Time-Embedded RNN + XGBoost)")
+    print("RESULTS SUMMARY - TIME-EMBEDDED RNN + XGBOOST")
     print("="*80)
     print(f"AUC:         {np.mean(auc_scores):.4f} ± {np.std(auc_scores):.4f}")
     print(f"Accuracy:    {np.mean(accuracy_scores):.4f} ± {np.std(accuracy_scores):.4f}")
@@ -291,10 +379,28 @@ def main():
     print(f"AUC-PR:      {np.mean(auc_pr_scores):.4f} ± {np.std(auc_pr_scores):.4f}")
     print("="*80)
 
-    print("\nCOMPARISON:")
-    print("  XGBoost (last only):        AUC 0.802 ± 0.010")
-    print("  Time-Embedded RNN:          AUC 0.781 ± 0.034")
-    print(f"  TimeEmbed RNN + XGBoost:    AUC {np.mean(auc_scores):.3f} ± {np.std(auc_scores):.3f}")
+    print("\n" + "="*80)
+    print("RESULTS SUMMARY - XGBOOST ON LAST FEATURES (BASELINE, SAME DATA SPLIT)")
+    print("="*80)
+    print(f"AUC:         {np.mean(auc_scores_last):.4f} ± {np.std(auc_scores_last):.4f}")
+    print(f"Accuracy:    {np.mean(accuracy_scores_last):.4f} ± {np.std(accuracy_scores_last):.4f}")
+    print(f"Specificity: {np.mean(specificity_scores_last):.4f} ± {np.std(specificity_scores_last):.4f}")
+    print(f"Precision:   {np.mean(precision_scores_last):.4f} ± {np.std(precision_scores_last):.4f}")
+    print(f"Recall:      {np.mean(recall_scores_last):.4f} ± {np.std(recall_scores_last):.4f}")
+    print(f"AUC-PR:      {np.mean(auc_pr_scores_last):.4f} ± {np.std(auc_pr_scores_last):.4f}")
+    print("="*80)
+
+    print("\n" + "="*80)
+    print("FINAL COMPARISON (ON SAME DATA SPLITS)")
+    print("="*80)
+    print(f"TimeEmbed RNN + XGBoost:    AUC {np.mean(auc_scores):.4f} ± {np.std(auc_scores):.4f}")
+    print(f"XGBoost (last features):    AUC {np.mean(auc_scores_last):.4f} ± {np.std(auc_scores_last):.4f}")
+    print(f"\nDifference: {np.mean(auc_scores) - np.mean(auc_scores_last):.4f}")
+
+    if np.mean(auc_scores) > np.mean(auc_scores_last):
+        print("✓ TimeEmbed RNN + XGBoost performs better")
+    else:
+        print("✗ Simple XGBoost on last features performs better")
 
 
 if __name__ == "__main__":
