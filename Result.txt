@@ -35,12 +35,12 @@ Recall          | Hybrid: 0.6814 ± 0.0215  vs  Baseline: 0.6836 ± 0.0388
 
 TabX_PrototypeMetricHead.py
 
-AUC             | Hybrid: 0.8556 ± 0.0129  vs  Baseline: 0.8607 ± 0.0181
-AUC-PR          | Hybrid: 0.7900 ± 0.0236  vs  Baseline: 0.8124 ± 0.0340
-Accuracy        | Hybrid: 0.7935 ± 0.0159  vs  Baseline: 0.7919 ± 0.0207
-Specificity     | Hybrid: 0.8524 ± 0.0335  vs  Baseline: 0.8621 ± 0.0452
-Precision       | Hybrid: 0.7577 ± 0.0374  vs  Baseline: 0.7674 ± 0.0511
-Recall          | Hybrid: 0.7026 ± 0.0283  vs  Baseline: 0.6836 ± 0.0388
+AUC             | Hybrid: 0.8611 ± 0.0158  vs  Baseline: 0.8607 ± 0.0181
+AUC-PR          | Hybrid: 0.7983 ± 0.0277  vs  Baseline: 0.8124 ± 0.0340
+Accuracy        | Hybrid: 0.7877 ± 0.0202  vs  Baseline: 0.7919 ± 0.0207
+Specificity     | Hybrid: 0.8443 ± 0.0271  vs  Baseline: 0.8621 ± 0.0452
+Precision       | Hybrid: 0.7456 ± 0.0332  vs  Baseline: 0.7674 ± 0.0511
+Recall          | Hybrid: 0.7004 ± 0.0368  vs  Baseline: 0.6836 ± 0.0388
 
 TabX_MultiheadMimic.py
 FINAL RESULTS SUMMARY

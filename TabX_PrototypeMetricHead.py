@@ -30,6 +30,7 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
     precision_recall_curve,
+    average_precision_score,
     auc,
 )
 def seed_everything(seed=42):
@@ -299,7 +300,11 @@ def train_rnn_extractor(model, train_loader, val_loader, criterion, optimizer, e
                     all_preds.extend(preds.cpu().numpy())
                     all_lbls.extend(labels.cpu().numpy())
             
-            auc_val = roc_auc_score(all_lbls, all_preds)
+            #auc_val = roc_auc_score(all_lbls, all_preds)
+            auc = roc_auc_score(all_lbls, all_preds)
+            aupr = average_precision_score(all_lbls, all_preds)
+            auc_val = 2 * auc * aupr / (auc + aupr + 1e-8)  # Fused AUC Metric
+
             print(f"    Epoch {epoch+1} Val AUC: {auc_val:.4f}")
             
             if auc_val > best_auc:
