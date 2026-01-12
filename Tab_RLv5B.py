@@ -681,7 +681,7 @@ def main():
         val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn_v5)
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn_v5)
 
-        latent_dim = 64  # DOUBLED from V5
+        latent_dim = 128  # DOUBLED from V5
         policy_net = RNNPolicyNetworkWithReconstruction(
             input_dim=len(temporal_feats),
             hidden_dim=24,
