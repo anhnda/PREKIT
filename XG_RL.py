@@ -295,7 +295,7 @@ def extract_features_and_logprobs(policy_net, loader, deterministic=False):
                     else:
                         last_v = 0.0
                     patient_last.append(last_v)
-            batch_last_vals.append(patient_last)
+                batch_last_vals.append(patient_last)
 
             last_vals_arr = np.array(batch_last_vals)
 
