@@ -7,7 +7,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as dist
 from torch.utils.data import Dataset, DataLoader
-from tabpfn import TabPFNClassifier
 import random
 import os
 from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
@@ -22,6 +21,7 @@ try:
     analytics.disable()
 except Exception:
     pass
+from tabpfn import TabPFNClassifier
 
 # ==============================================================================
 # 0. Setup & Constants
