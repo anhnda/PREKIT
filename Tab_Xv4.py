@@ -104,10 +104,13 @@ class PerFeatureStatisticalEncoder(nn.Module):
         )
 
         # Statistical heads (output 7 statistics)
+        # Use Tanh to bound outputs to [-1, 1] range
         self.stat_head = nn.Sequential(
             nn.Linear(hidden_dim * 3, hidden_dim),  # 3 = last + max + attention
             nn.ReLU(),
-            nn.Linear(hidden_dim, 7)  # 7 statistics
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, 7),  # 7 statistics
+            nn.Tanh()  # CRITICAL: Bound outputs to [-1, 1]
         )
 
     def forward(self, values, mask):
@@ -280,7 +283,17 @@ class StatisticalDatasetV4(Dataset):
                 min_val = np.min(valid_vals)
                 max_val = np.max(valid_vals)
                 slope = (valid_vals[-1] - valid_vals[0]) / (valid_times[-1] - valid_times[0] + 1e-6) if len(valid_vals) >= 2 else 0.0
-                count = len(valid_vals)
+                count = len(valid_idx)
+
+                # Normalize to [-1, 1] range using tanh(x/3) to match model output
+                # Values are already normalized (z-score), so typically in [-3, 3]
+                last = np.tanh(last / 3.0)
+                mean_val = np.tanh(mean_val / 3.0)
+                std_val = np.tanh(std_val / 2.0)  # Std is typically 0-2
+                min_val = np.tanh(min_val / 3.0)
+                max_val = np.tanh(max_val / 3.0)
+                slope = np.tanh(slope / 0.5)  # Slope is typically small
+                count = np.tanh(count / 10.0)  # Normalize count (typically 1-20)
 
                 # Order: [last, mean, std, min, max, slope, count]
                 handcrafted.extend([last, mean_val, std_val, min_val, max_val, slope, count])
@@ -396,14 +409,26 @@ def train_encoder(encoder, train_loader, val_loader, baseline_dim, num_features,
             # Statistical matching loss (now dimensions match!)
             stat_loss = criterion_stat(learned_stats, true_stats)
 
-            # Combined loss (stat matching weight = 0.5)
-            total_loss = cls_loss + 0.5 * stat_loss
+            # Safety check: skip batch if stat_loss is too large
+            if stat_loss.item() > 100.0:
+                print(f"    WARNING: Skipping batch with stat_loss={stat_loss.item():.2f}")
+                continue
+
+            # Combined loss (reduced stat weight to 0.3 for stability)
+            total_loss = cls_loss + 0.3 * stat_loss
+
+            # Check for NaN/Inf
+            if torch.isnan(total_loss) or torch.isinf(total_loss):
+                print(f"    WARNING: NaN/Inf loss detected, skipping batch")
+                continue
 
             optimizer.zero_grad()
             total_loss.backward()
+
+            # Aggressive gradient clipping to prevent explosion
             torch.nn.utils.clip_grad_norm_(
                 list(encoder.parameters()) + list(supervised_head.parameters()),
-                max_norm=1.0
+                max_norm=0.5  # More aggressive clipping
             )
             optimizer.step()
 
