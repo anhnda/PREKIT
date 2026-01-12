@@ -437,7 +437,7 @@ def main():
         
         # Start Training (Judge fits inside the function)
 # Pass train_ds directly, not train_loader
-        rnn_policy = train_rnn_rl_toggle(rnn_policy, train_ds, base_tabpfn, epochs=15, split_ratio=0.1)
+        rnn_policy = train_rnn_rl_toggle(rnn_policy, train_ds, base_tabpfn, epochs=15)
         # --------------------------------------------------------
         # EVALUATION: RL AGENT
         # --------------------------------------------------------
