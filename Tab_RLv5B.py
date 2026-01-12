@@ -94,54 +94,18 @@ FIXED_FEATURES = [
 ]
 
 # ==============================================================================
-# 1. Static Encoder
-# ==============================================================================
-
-class SimpleStaticEncoder:
-    def __init__(self, features):
-        self.features = features
-        self.mappings = {f: {} for f in features}
-        self.counts = {f: 0 for f in features}
-
-    def fit(self, patients):
-        for p in patients:
-            for f in self.features:
-                val = p.measures.get(f, 0.0)
-                if hasattr(val, 'values') and len(val) > 0:
-                    val = list(val.values())[0]
-                elif hasattr(val, 'values'):
-                    val = 0.0
-
-                val_str = str(val)
-                try:
-                    float(val)
-                except ValueError:
-                    if val_str not in self.mappings[f]:
-                        self.mappings[f][val_str] = float(self.counts[f])
-                        self.counts[f] += 1
-
-    def transform(self, patient):
-        vec = []
-        for f in self.features:
-            val = patient.measures.get(f, 0.0)
-            if hasattr(val, 'values') and len(val) > 0:
-                val = list(val.values())[0]
-            elif hasattr(val, 'values'):
-                val = 0.0
-
-            try:
-                numeric_val = float(val)
-            except ValueError:
-                numeric_val = self.mappings[f].get(str(val), -1.0)
-            vec.append(numeric_val)
-        return vec
-
-# ==============================================================================
-# 2. Dataset (Same as V5)
+# 1. Dataset (Uses properly encoded static features from getMeasuresBetween)
 # ==============================================================================
 
 class HybridDatasetV5(Dataset):
-    def __init__(self, patients, feature_names, static_encoder, normalization_stats=None):
+    def __init__(self, patients, feature_names, static_features_df, normalization_stats=None):
+        """
+        Args:
+            patients: Patients object or list of patients
+            feature_names: List of temporal feature names
+            static_features_df: DataFrame with properly encoded static features (from encodeCategoricalData)
+            normalization_stats: Pre-computed mean/std for temporal features
+        """
         self.data = []
         self.labels = []
         self.static_data = []
@@ -152,12 +116,13 @@ class HybridDatasetV5(Dataset):
         all_values = []
         patient_list = patients.patientList if hasattr(patients, 'patientList') else patients
 
-        for patient in patient_list:
+        for idx, patient in enumerate(patient_list):
             times, values, masks = extract_temporal_data(patient, feature_names)
             if times is None:
                 continue
 
-            s_vec = static_encoder.transform(patient)
+            # Use properly encoded static features from dataframe
+            s_vec = static_features_df.iloc[idx].values
             self.static_data.append(torch.tensor(s_vec, dtype=torch.float32))
             self.data.append({'times': times, 'values': values, 'masks': masks})
             self.labels.append(1 if patient.akdPositive else 0)
@@ -269,7 +234,7 @@ def hybrid_collate_fn_v5(batch):
             torch.stack(static_list), torch.stack(handcrafted_list), torch.stack(last_list))
 
 # ==============================================================================
-# 3. RNN Policy Network with Reconstruction
+# 2. RNN Policy Network with Reconstruction
 # ==============================================================================
 
 class RNNPolicyNetworkWithReconstruction(nn.Module):
@@ -345,10 +310,10 @@ class SupervisedHead(nn.Module):
         return torch.sigmoid(self.fc3(x))
 
 # ==============================================================================
-# 4. Enhanced Pretraining with Reconstruction Loss
+# 3. Enhanced Pretraining with Reconstruction Loss
 # ==============================================================================
 
-def pretrain_rnn_with_reconstruction(policy_net, train_loader, val_loader, epochs=50):
+def pretrain_rnn_with_reconstruction(policy_net, train_loader, val_loader, static_dim, epochs=50):
     """
     Pretraining with dual objectives:
     1. Classification (primary)
@@ -357,7 +322,7 @@ def pretrain_rnn_with_reconstruction(policy_net, train_loader, val_loader, epoch
     print("  [Enhanced Pretraining] With reconstruction loss...")
 
     supervised_head = SupervisedHead(
-        policy_net.latent_dim + len(FIXED_FEATURES)
+        policy_net.latent_dim + static_dim
     ).to(DEVICE)
 
     optimizer = torch.optim.Adam(
@@ -445,7 +410,7 @@ def pretrain_rnn_with_reconstruction(policy_net, train_loader, val_loader, epoch
     return policy_net, best_auc
 
 # ==============================================================================
-# 5. Feature Extraction (Same as V5)
+# 4. Feature Extraction (Same as V5)
 # ==============================================================================
 
 def extract_simple_features_with_z(policy_net, loader, deterministic=False, temperature=1.0):
@@ -483,44 +448,8 @@ def extract_simple_features_with_z(policy_net, loader, deterministic=False, temp
 
     return features, labels, log_probs
 
-def extract_baseline_simple_features(patients_obj, feature_names, encoder, norm_stats):
-    """Extract baseline: [Static + Last]"""
-    patient_list = patients_obj.patientList if hasattr(patients_obj, 'patientList') else patients_obj
-
-    all_features = []
-    all_labels = []
-
-    for patient in patient_list:
-        times, values, masks = extract_temporal_data(patient, feature_names)
-        if times is None:
-            continue
-
-        s_vec = encoder.transform(patient)
-
-        norm_values = []
-        for v_vec, m_vec in zip(values, masks):
-            norm = [(v - norm_stats['mean'])/norm_stats['std'] if m>0 else 0.0
-                    for v, m in zip(v_vec, m_vec)]
-            norm_values.append(norm)
-
-        last_vals = []
-        for f_idx in range(len(norm_values[0])):
-            f_vals = np.array([norm_values[t][f_idx] for t in range(len(norm_values))])
-            f_mask = np.array([masks[t][f_idx] for t in range(len(masks))])
-            valid_idx = np.where(f_mask > 0)[0]
-            if len(valid_idx) > 0:
-                last_vals.append(f_vals[valid_idx[-1]])
-            else:
-                last_vals.append(0.0)
-
-        combined = np.hstack([s_vec, last_vals])
-        all_features.append(combined)
-        all_labels.append(1 if patient.akdPositive else 0)
-
-    return np.array(all_features), np.array(all_labels)
-
 # ==============================================================================
-# 6. RL Training (Same as V5)
+# 5. RL Training (Same as V5)
 # ==============================================================================
 
 def train_policy_adaptive_rl(
@@ -632,7 +561,7 @@ def train_policy_adaptive_rl(
     return policy_net
 
 # ==============================================================================
-# 7. Main Execution
+# 6. Main Execution
 # ==============================================================================
 
 def main():
@@ -644,17 +573,20 @@ def main():
     patients = load_and_prepare_patients()
     temporal_feats = get_all_temporal_features(patients)
 
-    print("Encoding static features...")
-    encoder = SimpleStaticEncoder(FIXED_FEATURES)
-    encoder.fit(patients.patientList)
+    print("Extracting and encoding static features using getMeasuresBetween...")
+    # Get static features (only) at admission time
+    df_static_all = patients.getMeasuresBetween(
+        pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+    )
+    # Keep only static features (FIXED_FEATURES)
+    static_cols = [col for col in FIXED_FEATURES if col in df_static_all.columns]
+    df_static_all = df_static_all[static_cols]
 
-    print(f"Input: {len(temporal_feats)} Temporal + {len(FIXED_FEATURES)} Static Features")
+    print(f"Input: {len(temporal_feats)} Temporal + {len(static_cols)} Static Features")
+    print(f"Static features will be one-hot encoded, resulting in more columns")
 
     num_handcrafted = len(temporal_feats) * 7
-    auxiliary_dim = num_handcrafted + len(FIXED_FEATURES)
-
-    print(f"RNN auxiliary dimension: {auxiliary_dim}")
-    print(f"Handcrafted dimension: {num_handcrafted}")
+    print(f"Handcrafted dimension: {num_handcrafted} (7 stats per temporal feature)")
     print(f"Z dimension: 64 (doubled from V5's 32)")
 
     metrics_rl = {k: [] for k in ['auc', 'auc_pr']}
@@ -672,21 +604,50 @@ def main():
         val_p = val_p_obj.patientList
         test_p_list = test_p.patientList
 
-        train_ds = HybridDatasetV5(train_p, temporal_feats, encoder)
+        # Extract and encode static features properly for this fold
+        df_static_train_raw = train_p_obj.getMeasuresBetween(
+            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+        )
+        df_static_val_raw = val_p_obj.getMeasuresBetween(
+            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+        )
+        df_static_test_raw = test_p.getMeasuresBetween(
+            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+        )
+
+        # Keep only static features for encoding
+        df_static_train = df_static_train_raw[static_cols].reset_index(drop=True)
+        df_static_val = df_static_val_raw[static_cols].reset_index(drop=True)
+        df_static_test = df_static_test_raw[static_cols].reset_index(drop=True)
+
+        # Encode static features using the same method as baseline
+        df_static_train_enc, df_static_test_enc, df_static_val_enc = encodeCategoricalData(
+            df_static_train, df_static_test, df_static_val
+        )
+
+        # Now create datasets with properly encoded static features
+        train_ds = HybridDatasetV5(train_p, temporal_feats, df_static_train_enc)
         stats = train_ds.get_normalization_stats()
-        val_ds = HybridDatasetV5(val_p, temporal_feats, encoder, stats)
-        test_ds = HybridDatasetV5(test_p_list, temporal_feats, encoder, stats)
+        val_ds = HybridDatasetV5(val_p, temporal_feats, df_static_val_enc, stats)
+        test_ds = HybridDatasetV5(test_p_list, temporal_feats, df_static_test_enc, stats)
 
         train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=hybrid_collate_fn_v5)
         val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn_v5)
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn_v5)
+
+        # Get actual encoded static feature dimension
+        static_dim = df_static_train_enc.shape[1]
+        auxiliary_dim_actual = num_handcrafted + static_dim
+
+        print(f"  Static features encoded dimension: {static_dim} (from {len(static_cols)} features)")
+        print(f"  Auxiliary dimension: {auxiliary_dim_actual}")
 
         latent_dim = 64  # DOUBLED from V5
         policy_net = RNNPolicyNetworkWithReconstruction(
             input_dim=len(temporal_feats),
             hidden_dim=24,
             latent_dim=latent_dim,
-            auxiliary_dim=auxiliary_dim,
+            auxiliary_dim=auxiliary_dim_actual,
             handcrafted_dim=num_handcrafted,
             time_dim=32
         ).to(DEVICE)
@@ -697,7 +658,7 @@ def main():
 
         # STEP 1: Pretraining with reconstruction
         policy_net, pretrain_aupr = pretrain_rnn_with_reconstruction(
-            policy_net, train_loader, val_loader, epochs=50
+            policy_net, train_loader, val_loader, static_dim, epochs=50
         )
 
         # STEP 2: RL Fine-tuning
@@ -743,15 +704,22 @@ def main():
 
         print(f"  RL Test AUC: {fold_auc:.4f} | Test AUPR: {fold_aupr:.4f}")
 
-        # BASELINE
+        # BASELINE (Same as V3)
         print("\n  [Baseline] Simple [Static + Last]...")
 
-        X_train_baseline, y_train_baseline = extract_baseline_simple_features(
-            train_p_obj, temporal_feats, encoder, stats
-        )
-        X_test_baseline, y_test_baseline = extract_baseline_simple_features(
-            test_p, temporal_feats, encoder, stats
-        )
+        df_train_temp = train_p_obj.getMeasuresBetween(
+            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+        ).drop(columns=["subject_id", "hadm_id", "stay_id"])
+        df_test_temp = test_p.getMeasuresBetween(
+            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+        ).drop(columns=["subject_id", "hadm_id", "stay_id"])
+
+        df_train_enc, df_test_enc, _ = encodeCategoricalData(df_train_temp, df_test_temp)
+
+        X_train_baseline = df_train_enc.drop(columns=["akd"]).fillna(0)
+        y_train_baseline = df_train_enc["akd"]
+        X_test_baseline = df_test_enc.drop(columns=["akd"]).fillna(0)
+        y_test_baseline = df_test_enc["akd"]
 
         tabpfn_base = TabPFNClassifier(**tabpfn_params)
         tabpfn_base.fit(X_train_baseline, y_train_baseline)
