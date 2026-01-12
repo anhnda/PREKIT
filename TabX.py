@@ -427,12 +427,26 @@ class PolicyNetworkWithLearnedStats(nn.Module):
         self.num_stats_per_feature = 7  # recency, central, var, min, max, trend, density
         self.learned_stats_dim = num_features * self.num_stats_per_feature
 
+        # Batch normalization for stability
+        self.bn_stats = nn.BatchNorm1d(self.learned_stats_dim)
+
         # Policy head: learned_stats → latent Z (for exploration/exploitation)
         self.fc_mean = nn.Linear(self.learned_stats_dim, latent_dim)
         self.fc_logstd = nn.Linear(self.learned_stats_dim, latent_dim)
 
         self.latent_dim = latent_dim
         self.num_features = num_features
+
+        # Initialize weights properly
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        """Initialize weights using Xavier/Glorot initialization"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=0.5)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
 
     def forward(self, batch_data, deterministic=False, temperature=1.0):
         times = batch_data['times'].to(DEVICE)
@@ -442,9 +456,41 @@ class PolicyNetworkWithLearnedStats(nn.Module):
         # Learn statistics through multi-head aggregator
         learned_stats = self.stat_aggregator(values, times, masks)  # (batch, feat_dim * 7)
 
+        # Check for NaN in learned_stats
+        if torch.isnan(learned_stats).any():
+            print(f"WARNING: NaN detected in learned_stats after aggregator")
+            learned_stats = torch.nan_to_num(learned_stats, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Apply batch normalization for stability
+        if learned_stats.shape[0] > 1:  # Only if batch size > 1
+            learned_stats = self.bn_stats(learned_stats)
+        else:
+            # For batch size 1, skip batch norm (or use eval mode behavior)
+            pass
+
+        # Check for NaN after batch norm
+        if torch.isnan(learned_stats).any():
+            print(f"WARNING: NaN detected in learned_stats after batch norm")
+            learned_stats = torch.nan_to_num(learned_stats, nan=0.0, posinf=0.0, neginf=0.0)
+
         # Generate policy distribution over latent Z
         mean = self.fc_mean(learned_stats)
         log_std = self.fc_logstd(learned_stats)
+
+        # Check for NaN in mean and log_std
+        if torch.isnan(mean).any() or torch.isinf(mean).any():
+            print(f"ERROR: NaN/Inf detected in mean")
+            print(f"  learned_stats stats: min={learned_stats.min():.4f}, max={learned_stats.max():.4f}, mean={learned_stats.mean():.4f}")
+            print(f"  fc_mean weight stats: min={self.fc_mean.weight.min():.4f}, max={self.fc_mean.weight.max():.4f}")
+            print(f"  fc_mean has NaN weights: {torch.isnan(self.fc_mean.weight).any()}")
+            raise ValueError("NaN detected in mean - check model weights and inputs")
+
+        if torch.isnan(log_std).any() or torch.isinf(log_std).any():
+            print(f"ERROR: NaN/Inf detected in log_std")
+            print(f"  fc_logstd weight stats: min={self.fc_logstd.weight.min():.4f}, max={self.fc_logstd.weight.max():.4f}")
+            print(f"  fc_logstd has NaN weights: {torch.isnan(self.fc_logstd.weight).any()}")
+            raise ValueError("NaN detected in log_std - check model weights")
+
         log_std = torch.clamp(log_std, min=-20, max=2)
         std = torch.exp(log_std) * temperature
 
@@ -481,6 +527,25 @@ class SupervisedHead(nn.Module):
 # ==============================================================================
 # 4. Pretraining with Statistical Matching Loss
 # ==============================================================================
+
+def check_gradients_for_nan(model, optimizer):
+    """Check if any gradients or parameters have NaN values"""
+    has_nan_grad = False
+    has_nan_param = False
+
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                print(f"  NaN/Inf gradient detected in {name}")
+                has_nan_grad = True
+        if torch.isnan(param).any() or torch.isinf(param).any():
+            print(f"  NaN/Inf parameter detected in {name}")
+            has_nan_param = True
+
+    if has_nan_grad or has_nan_param:
+        print(f"  ERROR: Model has NaN gradients={has_nan_grad}, NaN params={has_nan_param}")
+        return True
+    return False
 
 def pretrain_with_stat_matching(policy_net, train_loader, val_loader, static_dim, epochs=50):
     """
@@ -535,6 +600,18 @@ def pretrain_with_stat_matching(policy_net, train_loader, val_loader, static_dim
 
             optimizer.zero_grad()
             total_loss.backward()
+
+            # Check for NaN in loss
+            if torch.isnan(total_loss) or torch.isinf(total_loss):
+                print(f"  ERROR: NaN/Inf loss detected: cls_loss={cls_loss.item():.4f}, stat_loss={stat_loss.item():.4f}")
+                continue
+
+            # Check for NaN gradients before clipping
+            if check_gradients_for_nan(policy_net, optimizer) or check_gradients_for_nan(supervised_head, optimizer):
+                print(f"  ERROR: NaN gradients detected, skipping this batch")
+                optimizer.zero_grad()
+                continue
+
             torch.nn.utils.clip_grad_norm_(
                 list(policy_net.parameters()) + list(supervised_head.parameters()),
                 max_norm=1.0
@@ -691,6 +768,19 @@ def train_policy_rl(policy_net, train_loader, val_loader, tabpfn_params,
 
         optimizer.zero_grad()
         total_loss.backward()
+
+        # Check for NaN in loss
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            print(f"  ERROR: NaN/Inf loss detected at epoch {epoch+1}")
+            optimizer.zero_grad()
+            continue
+
+        # Check for NaN gradients
+        if check_gradients_for_nan(policy_net, optimizer):
+            print(f"  ERROR: NaN gradients detected at epoch {epoch+1}, skipping update")
+            optimizer.zero_grad()
+            continue
+
         torch.nn.utils.clip_grad_norm_(policy_net.parameters(), max_norm=0.5)
         optimizer.step()
 
