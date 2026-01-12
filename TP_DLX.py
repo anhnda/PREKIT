@@ -252,117 +252,112 @@ class GaussianRNNPolicy(nn.Module):
 # ==============================================================================
 # 3. RL Training (Robust Iterative Judge)
 # ==============================================================================
-def train_rnn_rl_toggle(rnn_policy, train_ds, base_tabpfn, epochs=15):
+def train_rnn_rl_marginal(rnn_policy, train_ds, base_tabpfn, epochs=15):
     """
-    Splits data 50/50 (Set A / Set B).
-    1. Train Judge on A -> Reward Agent on B.
-    2. Train Judge on B -> Reward Agent on A.
-    Result: Agent trains on 100% of data, Judge is always blind.
+    Uses Marginal Reward: Env(Static + Z) - Env(Static + 0).
+    This isolates the agent's impact from model variance.
     """
     optimizer = torch.optim.Adam(rnn_policy.parameters(), lr=0.0001)
     
-    # Static 50/50 Split
+    # 50/50 Split Setup
     n_samples = len(train_ds)
     indices = list(range(n_samples))
     random.shuffle(indices)
     mid = n_samples // 2
-    
-    # Create two permanent sets
     idx_A = indices[:mid]
     idx_B = indices[mid:]
     
-    print(f"  [RL] Starting Fine-Tuning (50/50 Toggle)...")
-    print(f"  {'Epoch':>5} | {'Avg Reward':>10} | {'Avg Delta':>10}")
+    print(f"  [RL] Starting Fine-Tuning (Marginal Reward)...")
+    print(f"  {'Epoch':>5} | {'Avg Reward':>10} | {'True Delta':>10}")
 
-    # Helper to load batch data
+    # Helper to load data
     def get_data(idxs):
         sub = torch.utils.data.Subset(train_ds, idxs)
         loader = DataLoader(sub, batch_size=len(sub), collate_fn=hybrid_collate_fn)
         batch, labels, static = next(iter(loader))
-        
-        last = extract_last_raw_values(batch).cpu().numpy()
-        stat = static.numpy()
-        y = labels.numpy().astype(int)
-        
-        # Pre-calculate Base Probabilities (Fixed)
-        X_base = np.hstack([last, stat])
-        p_base = base_tabpfn.predict_proba(X_base)[:, 1]
-        
         return {
-            'batch': batch, 'last': last, 'static': stat, 
-            'y': y, 'p_base': p_base
+            'batch': batch, 
+            'last': extract_last_raw_values(batch).cpu().numpy(), 
+            'static': static.numpy(), 
+            'y': labels.numpy().astype(int)
         }
 
-    # Load Data Once
     data_A = get_data(idx_A)
     data_B = get_data(idx_B)
 
     for epoch in range(epochs):
         rnn_policy.train()
-        epoch_rewards = []
-        epoch_deltas = []
+        track_rewards = []
+        track_real_deltas = [] # Track real performance against external baseline
 
-        # --- PROCESS BOTH HALVES (Toggle) ---
-        # Round 1: Judge trains on A, Agent updates on B
-        # Round 2: Judge trains on B, Agent updates on A
-        
+        # Toggle Loop
         sets = [(data_A, data_B), (data_B, data_A)]
         
         for (train_set, eval_set) in sets:
-            # 1. Train Judge on TRAIN_SET (e.g., A)
-            # We need current Z from Policy (No Grad)
+            # --- 1. Train Judge (Blind) ---
             with torch.no_grad():
                 mu, sigma = rnn_policy(train_set['batch'])
                 z_train = dist.Normal(mu, sigma).sample().cpu().numpy()
                 
-                # Robust Training: Mix Real Z and Zero Z
+                # Train on Mixed Real/Zero to learn the "value" of Z
                 X_real = np.hstack([train_set['last'], train_set['static'], z_train])
                 X_zero = np.hstack([train_set['last'], train_set['static'], np.zeros_like(z_train)])
                 
                 judge_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
+                # Fit on both so the model knows what "Zero" looks like
                 judge_env.fit(
                     np.vstack([X_real, X_zero]), 
                     np.concatenate([train_set['y'], train_set['y']])
                 )
 
-            # 2. Update Agent on EVAL_SET (e.g., B)
+            # --- 2. Reward Agent (Marginal Impact) ---
             optimizer.zero_grad()
             
-            # Agent Action (With Grad)
             mu_eval, sigma_eval = rnn_policy(eval_set['batch'])
             dist_eval = dist.Normal(mu_eval, sigma_eval)
             z_action = dist_eval.sample()
             log_prob = dist_eval.log_prob(z_action).sum(dim=1)
             
-            # Calculate Reward using Blind Judge
             with torch.no_grad():
-                z_eval_np = z_action.cpu().numpy()
-                X_eval = np.hstack([eval_set['last'], eval_set['static'], z_eval_np])
+                z_act_np = z_action.cpu().numpy()
+                z_zero_np = np.zeros_like(z_act_np)
                 
-                p_env = judge_env.predict_proba(X_eval)[:, 1]
-                p_base = eval_set['p_base']
+                # Prepare inputs for SAME model
+                X_action = np.hstack([eval_set['last'], eval_set['static'], z_act_np])
+                X_baseline = np.hstack([eval_set['last'], eval_set['static'], z_zero_np])
+                
+                # Predict
+                p_action = judge_env.predict_proba(X_action)[:, 1]
+                p_counterfactual = judge_env.predict_proba(X_baseline)[:, 1]
+                
+                # True Baseline (just for logging, not reward)
+                p_external_base = base_tabpfn.predict_proba(np.hstack([eval_set['last'], eval_set['static']]))[:, 1]
+                
                 y_true = eval_set['y']
-                
                 rewards = []
-                deltas = []
+                
                 for i in range(len(y_true)):
                     target = 1.0 if y_true[i] == 1 else 0.0
-                    imp = (p_env[i] - p_base[i]) if target == 1 else (p_base[i] - p_env[i])
-                    # Higher clipping to encourage bold moves
-                    rewards.append(np.clip(imp * 10.0, -2.0, 2.0))
-                    deltas.append(imp)
-                
-                rewards_t = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
-                epoch_rewards.extend(rewards)
-                epoch_deltas.extend(deltas)
+                    
+                    # Reward: Did Z help compared to Zero Z?
+                    # This removes the noise of the TabPFN re-training
+                    marginal_gain = (p_action[i] - p_counterfactual[i]) if target == 1 else (p_counterfactual[i] - p_action[i])
+                    
+                    # Real Delta: Did Z help compared to the original Panda Baseline?
+                    real_gain = (p_action[i] - p_external_base[i]) if target == 1 else (p_external_base[i] - p_action[i])
+                    
+                    rewards.append(np.clip(marginal_gain * 20.0, -5.0, 5.0)) # Higher scale for small marginals
+                    track_real_deltas.append(real_gain)
 
-            # Loss
+                track_rewards.extend(rewards)
+                rewards_t = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
+
             loss = -(log_prob * rewards_t).mean() - 0.05 * dist_eval.entropy().mean()
             loss.backward()
             optimizer.step()
 
         if (epoch+1) % 1 == 0:
-            print(f"  {epoch+1:05d} | {np.mean(epoch_rewards):10.4f} | {np.mean(epoch_deltas):10.4f}")
+            print(f"  {epoch+1:05d} | {np.mean(track_rewards):10.4f} | {np.mean(track_real_deltas):10.4f}")
 
     return rnn_policy
 # ==============================================================================
@@ -437,7 +432,7 @@ def main():
         
         # Start Training (Judge fits inside the function)
 # Pass train_ds directly, not train_loader
-        rnn_policy = train_rnn_rl_toggle(rnn_policy, train_ds, base_tabpfn, epochs=15)
+        rnn_policy = train_rnn_rl_marginal(rnn_policy, train_ds, base_tabpfn, epochs=15)
         # --------------------------------------------------------
         # EVALUATION: RL AGENT
         # --------------------------------------------------------
