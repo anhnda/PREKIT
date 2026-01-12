@@ -515,8 +515,7 @@ def main():
 
         # 3. TabPFN Parameters
         tabpfn_params = {
-            'N_ensemble_configurations': 16,
-            'device': 'cpu'
+            'device': 'cuda' if torch.cuda.is_available() else 'cpu'
         }
 
         # 4. Train Policy with RL
