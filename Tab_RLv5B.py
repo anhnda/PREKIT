@@ -364,8 +364,8 @@ def pretrain_rnn_with_reconstruction(policy_net, train_loader, val_loader, stati
             recon_handcrafted = policy_net.reconstruct_handcrafted(z)
             recon_loss = criterion_recon(recon_handcrafted, handcrafted)
 
-            # Combined loss (reconstruction weight = 0.3)
-            total_loss = cls_loss + 0.3 * recon_loss
+            # Combined loss (reconstruction weight = 1.0)
+            total_loss = cls_loss + 1.0 * recon_loss
 
             optimizer.zero_grad()
             total_loss.backward()
@@ -649,7 +649,7 @@ def main():
         print(f"  Static features encoded dimension: {static_dim} (from {len(static_cols)} features)")
         print(f"  Auxiliary dimension: {auxiliary_dim_actual}")
 
-        latent_dim = 64  # DOUBLED from V5
+        latent_dim = 96  # DOUBLED from V5
         policy_net = RNNPolicyNetworkWithReconstruction(
             input_dim=len(temporal_feats),
             hidden_dim=24,
