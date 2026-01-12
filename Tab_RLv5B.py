@@ -150,6 +150,8 @@ class HybridDatasetV5(Dataset):
             handcrafted = self._compute_handcrafted_features(
                 norm_values, self.data[i]['masks'], self.data[i]['times']
             )
+            # Replace NaN/Inf with 0
+            handcrafted = np.nan_to_num(handcrafted, nan=0.0, posinf=0.0, neginf=0.0)
             self.handcrafted_data.append(torch.tensor(handcrafted, dtype=torch.float32))
 
             last_vals = self._extract_last_values(norm_values, self.data[i]['masks'])
@@ -624,6 +626,11 @@ def main():
         df_static_train_enc, df_static_test_enc, df_static_val_enc = encodeCategoricalData(
             df_static_train, df_static_test, df_static_val
         )
+
+        # Fill NaN values with 0 (important!)
+        df_static_train_enc = df_static_train_enc.fillna(0)
+        df_static_val_enc = df_static_val_enc.fillna(0)
+        df_static_test_enc = df_static_test_enc.fillna(0)
 
         # Now create datasets with properly encoded static features
         train_ds = HybridDatasetV5(train_p, temporal_feats, df_static_train_enc)
