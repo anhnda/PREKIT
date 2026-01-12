@@ -170,6 +170,10 @@ class StatisticalHead(nn.Module):
             # Use masked mean as global context
             valid_counts = feat_masks.sum(dim=1, keepdim=True).clamp(min=1)
             global_context = feat_values_masked.sum(dim=1, keepdim=True) / valid_counts
+
+            # Handle potential NaN in global context
+            global_context = torch.nan_to_num(global_context, nan=0.0)
+
             query = self.query_net(torch.cat([global_context, torch.zeros_like(time_enc[:, :1, :])], dim=-1))  # (batch, 1, hidden)
 
             # Compute keys and values
@@ -181,10 +185,21 @@ class StatisticalHead(nn.Module):
 
             # Mask out invalid positions
             mask_attention = (feat_masks.squeeze(-1) == 0)  # (batch, seq_len)
+
+            # Check if all positions are masked (no valid observations for this feature)
+            all_masked = mask_attention.all(dim=1)  # (batch,)
+
             attention = attention.masked_fill(mask_attention.unsqueeze(1), float('-inf'))
 
-            # Softmax attention
+            # Softmax attention (will produce NaN if all values are -inf)
             attention_weights = F.softmax(attention, dim=-1)  # (batch, 1, seq_len)
+
+            # Replace NaN with uniform weights for all-masked cases
+            attention_weights = torch.where(
+                all_masked.view(-1, 1, 1).expand_as(attention_weights),
+                torch.zeros_like(attention_weights),  # Use zeros for all-masked
+                attention_weights
+            )
 
             # Aggregate
             aggregated = torch.matmul(attention_weights, values_proj).squeeze(1)  # (batch, output_dim)
@@ -247,6 +262,9 @@ class MultiHeadStatisticalAggregator(nn.Module):
         learned_stats = torch.cat([
             recency, central, variability, min_vals, max_vals, trend, density
         ], dim=1)  # (batch, feat_dim * 7)
+
+        # Safety: Replace any NaN or Inf values with 0
+        learned_stats = torch.nan_to_num(learned_stats, nan=0.0, posinf=0.0, neginf=0.0)
 
         return learned_stats
 
