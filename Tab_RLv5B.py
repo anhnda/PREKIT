@@ -655,7 +655,7 @@ def main():
 
     print(f"RNN auxiliary dimension: {auxiliary_dim}")
     print(f"Handcrafted dimension: {num_handcrafted}")
-    print(f"Z dimension: 64 (doubled from V5's 32)")
+    print(f"Z dimension: {latent_dim} (doubled from V5's 32)")
 
     metrics_rl = {k: [] for k in ['auc', 'auc_pr']}
     metrics_baseline = {k: [] for k in ['auc', 'auc_pr']}
