@@ -1,0 +1,11 @@
+XG_RL.py
+
+AUC             | RL: 0.8397 ± 0.0240  vs  Baseline: 0.8192 ± 0.0237
+AUC-PR          | RL: 0.7724 ± 0.0391  vs  Baseline: 0.7449 ± 0.0515
+
+
+Tab_RL.py
+
+AUC             | RL: 0.8540 ± 0.0244  vs  Baseline: 0.8608 ± 0.0167                     
+AUC-PR          | RL: 0.7905 ± 0.0384  vs  Baseline: 0.8058 ± 0.0364
+
