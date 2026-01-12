@@ -454,7 +454,7 @@ def train_policy_with_xgboost_reward(
 
 def main():
     print("="*80)
-    print("REINFORCEMENT LEARNING: RNN Policy + XGBoost Judge")
+    print("RL POLICY (RNN + XGBoost) vs BASELINE (Last + Static)")
     print("="*80)
 
     patients = load_and_prepare_patients()
@@ -466,9 +466,11 @@ def main():
 
     print(f"Input: {len(temporal_feats)} Temporal + {len(FIXED_FEATURES)} Static Features")
 
-    metrics = {k: [] for k in ['auc', 'acc', 'spec', 'prec', 'rec', 'auc_pr']}
+    # Store metrics for RL and Baseline
+    metrics_rl = {k: [] for k in ['auc', 'auc_pr']}
+    metrics_baseline = {k: [] for k in ['auc', 'auc_pr']}
 
-    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
     for fold, (train_full, test_p) in enumerate(trainTestPatients(patients)):
         print(f"\n{'='*80}")
@@ -549,40 +551,91 @@ def main():
         fold_auc = roc_auc_score(y_test_final, y_test_proba)
         fold_aupr = auc(rec, prec)
 
-        metrics['auc'].append(fold_auc)
-        metrics['acc'].append(accuracy_score(y_test_final, y_test_pred))
-        metrics['spec'].append(tn / (tn + fp))
-        metrics['prec'].append(precision_score(y_test_final, y_test_pred, zero_division=0))
-        metrics['rec'].append(recall_score(y_test_final, y_test_pred))
-        metrics['auc_pr'].append(fold_aupr)
+        metrics_rl['auc'].append(fold_auc)
+        metrics_rl['auc_pr'].append(fold_aupr)
 
-        # Plot ROC
+        # Plot ROC for RL
         fpr, tpr, _ = roc_curve(y_test_final, y_test_proba)
-        ax.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {fold_auc:.3f})")
+        ax1.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {fold_auc:.3f})")
 
-        print(f"  Test AUC: {fold_auc:.4f} | Test AUPR: {fold_aupr:.4f}")
+        print(f"  RL Test AUC: {fold_auc:.4f} | Test AUPR: {fold_aupr:.4f}")
 
-    # Final Plot
-    ax.plot([0, 1], [0, 1], linestyle="--", color="navy", lw=2)
-    ax.set_xlim([0.0, 1.0])
-    ax.set_ylim([0.0, 1.05])
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title("RL Policy + XGBoost Judge (ROC Curves)")
-    ax.legend(loc="lower right")
+        # ======================================================================
+        # BASELINE: Standard XGBoost (Last Values + Static)
+        # ======================================================================
+        print("\n  [Baseline] Training Standard XGBoost (Last + Static)...")
+
+        # Extract "Last Values" using getMeasuresBetween
+        df_train_temp = train_p_obj.getMeasuresBetween(
+            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+        ).drop(columns=["subject_id", "hadm_id", "stay_id"])
+        df_test_temp = test_p.getMeasuresBetween(
+            pd.Timedelta(hours=-6), pd.Timedelta(hours=24), "last", getUntilAkiPositive=True
+        ).drop(columns=["subject_id", "hadm_id", "stay_id"])
+
+        # Encode categorical data
+        df_train_enc, df_test_enc, _ = encodeCategoricalData(df_train_temp, df_test_temp)
+
+        X_tr_b = df_train_enc.drop(columns=["akd"]).fillna(0)
+        y_tr_b = df_train_enc["akd"]
+        X_te_b = df_test_enc.drop(columns=["akd"]).fillna(0)
+        y_te_b = df_test_enc["akd"]
+
+        # Train baseline XGBoost
+        xgb_base = XGBClassifier(
+            n_estimators=500,
+            max_depth=6,
+            learning_rate=0.05,
+            scale_pos_weight=ratio,
+            eval_metric='auc',
+            random_state=42
+        )
+        xgb_base.fit(X_tr_b, y_tr_b)
+
+        # Evaluate baseline
+        y_prob_b = xgb_base.predict_proba(X_te_b)[:, 1]
+        prec_b, rec_b, _ = precision_recall_curve(y_te_b, y_prob_b)
+
+        baseline_auc = roc_auc_score(y_te_b, y_prob_b)
+        baseline_aupr = auc(rec_b, prec_b)
+
+        metrics_baseline['auc'].append(baseline_auc)
+        metrics_baseline['auc_pr'].append(baseline_aupr)
+
+        # Plot ROC for Baseline
+        fpr_b, tpr_b, _ = roc_curve(y_te_b, y_prob_b)
+        ax2.plot(fpr_b, tpr_b, lw=2, label=f"Fold {fold} (AUC = {baseline_auc:.3f})")
+
+        print(f"  Baseline Test AUC: {baseline_auc:.4f} | Test AUPR: {baseline_aupr:.4f}")
+        print(f"  Fold {fold} Results -> RL: {fold_auc:.3f} vs Baseline: {baseline_auc:.3f}")
+
+    # Final Plot Configuration
+    for ax in [ax1, ax2]:
+        ax.plot([0, 1], [0, 1], linestyle="--", color="navy", lw=2)
+        ax.set_xlim([0.0, 1.0])
+        ax.set_ylim([0.0, 1.05])
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+        ax.legend(loc="lower right")
+
+    ax1.set_title("RL Policy + XGBoost Judge")
+    ax2.set_title("Baseline (Last + Static)")
     plt.tight_layout()
-    plt.savefig("result/xg_rl_roc.png", dpi=300)
-    print("\nPlot saved to result/xg_rl_roc.png")
+    plt.savefig("result/xg_rl_vs_baseline.png", dpi=300)
+    print("\nPlot saved to result/xg_rl_vs_baseline.png")
 
     # Summary Statistics
     print("\n" + "="*80)
     print("FINAL RESULTS SUMMARY")
     print("="*80)
 
-    for metric_name, values in metrics.items():
-        mean_val = np.mean(values)
-        std_val = np.std(values)
-        print(f"{metric_name.upper():15s} | {mean_val:.4f} ± {std_val:.4f}")
+    def print_stat(name, rl_metrics, base_metrics):
+        rl_mean, rl_std = np.mean(rl_metrics), np.std(rl_metrics)
+        base_mean, base_std = np.mean(base_metrics), np.std(base_metrics)
+        print(f"{name:15s} | RL: {rl_mean:.4f} ± {rl_std:.4f}  vs  Baseline: {base_mean:.4f} ± {base_std:.4f}")
+
+    print_stat("AUC", metrics_rl['auc'], metrics_baseline['auc'])
+    print_stat("AUC-PR", metrics_rl['auc_pr'], metrics_baseline['auc_pr'])
 
 if __name__ == "__main__":
     main()
