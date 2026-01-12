@@ -456,7 +456,7 @@ def main():
         # F. TabPFN Training
         print("  Training TabPFN...")
         # Use ensemble_configurations=4 for speed/performance balance
-        classifier = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=4)
+        classifier = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
         classifier.fit(X_train_final, y_train_final)
         
         # G. Evaluation
@@ -476,7 +476,7 @@ def main():
         ax1.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC={fold_auc:.3f})")
         
         # H. Baseline Comparison (Static Only)
-        base_clf = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=4)
+        base_clf = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
         base_clf.fit(X_tr_base, y_train_final)
         y_prob_base = base_clf.predict_proba(X_te_base)[:, 1]
         
