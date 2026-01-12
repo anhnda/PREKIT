@@ -356,7 +356,7 @@ def main():
         # STAGE 1: SUPERVISED WARM-UP
         # --------------------------------------------------------
         print("  [Stage 1] Supervised Warm-Up (15 Epochs)...")
-        warmup_head = nn.Linear(12, 1).to(DEVICE)
+        warmup_head = nn.Linear(3, 1).to(DEVICE)
         warmup_opt = torch.optim.Adam(list(rnn_policy.parameters()) + list(warmup_head.parameters()), lr=0.001)
         bce = nn.BCELoss()
         
