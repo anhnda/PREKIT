@@ -371,6 +371,7 @@ def pretrain_rnn_enhanced(policy_net, train_loader, val_loader, epochs=50):
         for t_data, labels, s_data, handcrafted in train_loader:
             labels = labels.to(DEVICE)
             s_data = s_data.to(DEVICE)
+            handcrafted = handcrafted.to(DEVICE)
 
             # Auxiliary input: [handcrafted + static]
             auxiliary = torch.cat([handcrafted, s_data], dim=1)
@@ -397,6 +398,7 @@ def pretrain_rnn_enhanced(policy_net, train_loader, val_loader, epochs=50):
             with torch.no_grad():
                 for t_data, labels, s_data, handcrafted in val_loader:
                     s_data = s_data.to(DEVICE)
+                    handcrafted = handcrafted.to(DEVICE)
                     auxiliary = torch.cat([handcrafted, s_data], dim=1)
                     z, _, _ = policy_net(t_data, auxiliary, deterministic=True)
                     combined = torch.cat([z, s_data], dim=1)
@@ -438,6 +440,10 @@ def extract_extended_features_and_logprobs(policy_net, loader, deterministic=Fal
 
     with torch.set_grad_enabled(not deterministic):
         for t_data, labels, s_data, handcrafted in loader:
+            # Move to device
+            s_data = s_data.to(DEVICE)
+            handcrafted = handcrafted.to(DEVICE)
+
             # Auxiliary input to RNN
             auxiliary = torch.cat([handcrafted, s_data], dim=1)
 
@@ -445,8 +451,8 @@ def extract_extended_features_and_logprobs(policy_net, loader, deterministic=Fal
             z_np = (mean if deterministic else z).detach().cpu().numpy()
 
             # Final features: [static + handcrafted + Z]
-            s_np = s_data.numpy()
-            h_np = handcrafted.numpy()
+            s_np = s_data.cpu().numpy()
+            h_np = handcrafted.cpu().numpy()
 
             combined = np.hstack([s_np, h_np, z_np])
 
