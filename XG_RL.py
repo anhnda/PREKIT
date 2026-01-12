@@ -49,8 +49,8 @@ def seed_everything(seed=42):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-seed_everything()
+xseed = 42
+seed_everything(xseed)
 
 PT = "/Users/anhnd/CodingSpace/Python/PREDKIT"
 if sys.platform != "darwin":
@@ -472,7 +472,7 @@ def main():
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
-    for fold, (train_full, test_p) in enumerate(trainTestPatients(patients)):
+    for fold, (train_full, test_p) in enumerate(trainTestPatients(patients,seed=xseed)):
         print(f"\n{'='*80}")
         print(f"Fold {fold}")
         print('='*80)
