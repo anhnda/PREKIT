@@ -309,7 +309,7 @@ def extract_features_and_logprobs(policy_net, loader, deterministic=False):
             all_labels.extend(labels.numpy())
 
             if not deterministic and log_prob is not None:
-                all_log_probs.append(log_prob.detach())
+                all_log_probs.append(log_prob)  # Keep gradients for policy gradient!
 
     features = np.vstack(all_features)
     labels = np.array(all_labels)
