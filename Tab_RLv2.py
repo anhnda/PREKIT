@@ -285,7 +285,7 @@ def pretrain_rnn(policy_net, train_loader, val_loader, epochs=30):
     print("  [Pretraining] Supervised learning to initialize RNN...")
 
     supervised_head = SupervisedHead(
-        policy_net.hidden_dim + len(FIXED_FEATURES)
+        policy_net.latent_dim + len(FIXED_FEATURES)
     ).to(DEVICE)
 
     optimizer = torch.optim.Adam(
