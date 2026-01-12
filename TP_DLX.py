@@ -350,7 +350,7 @@ def main():
         train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=hybrid_collate_fn)
         test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
 
-        rnn_policy = GaussianRNNPolicy(len(temporal_feats), hidden_dim=64, z_dim=12).to(DEVICE)
+        rnn_policy = GaussianRNNPolicy(len(temporal_feats), hidden_dim=64, z_dim=3).to(DEVICE)
 
         # --------------------------------------------------------
         # STAGE 1: SUPERVISED WARM-UP
