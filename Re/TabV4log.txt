@@ -1,0 +1,184 @@
+AUC             | RL: 0.8709 ± 0.0172  vs  Baseline: 0.8608 ± 0.0167  (+1.17%) ✓
+AUC-PR          | RL: 0.8309 ± 0.0186  vs  Baseline: 0.8058 ± 0.0364  (+3.11%) ✓
+    Pretrain Epoch 45 | Val AUPR: 0.8420                                                               [226/1823]
+    Pretrain Epoch 48 | Val AUPR: 0.8454                                                                         
+  [Enhanced Pretraining] Completed. Best Val AUPR: 0.8729                                                        
+  [Adaptive RL] Using standard LR (0.0001)                                                                       
+  [Adaptive RL] Training for up to 120 epochs...                                                                 
+    Epoch   5 | Temp: 0.644 | AUPR wt: 0.32 | Val AUC: 0.8771 | Val AUPR: 0.8772 | Avg: 0.8772                   
+    Epoch  10 | Temp: 0.575 | AUPR wt: 0.35 | Val AUC: 0.8778 | Val AUPR: 0.8776 | Avg: 0.8731                   
+    Epoch  15 | Temp: 0.506 | AUPR wt: 0.38 | Val AUC: 0.8789 | Val AUPR: 0.8788 | Avg: 0.8750                   
+    Epoch  20 | Temp: 0.436 | AUPR wt: 0.41 | Val AUC: 0.8802 | Val AUPR: 0.8795 | Avg: 0.8750                   
+    Epoch  25 | Temp: 0.367 | AUPR wt: 0.44 | Val AUC: 0.8815 | Val AUPR: 0.8802 | Avg: 0.8728                   
+    Epoch  30 | Temp: 0.297 | AUPR wt: 0.47 | Val AUC: 0.8819 | Val AUPR: 0.8808 | Avg: 0.8738                   
+    Epoch  35 | Temp: 0.250 | AUPR wt: 0.50 | Val AUC: 0.8815 | Val AUPR: 0.8806 | Avg: 0.8772                   
+    Epoch  40 | Temp: 0.250 | AUPR wt: 0.53 | Val AUC: 0.8802 | Val AUPR: 0.8792 | Avg: 0.8797
+    Epoch  45 | Temp: 0.250 | AUPR wt: 0.56 | Val AUC: 0.8806 | Val AUPR: 0.8794 | Avg: 0.8777
+    Epoch  50 | Temp: 0.250 | AUPR wt: 0.59 | Val AUC: 0.8806 | Val AUPR: 0.8796 | Avg: 0.8741
+    Epoch  55 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8789 | Val AUPR: 0.8780 | Avg: 0.8771
+    Epoch  60 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8793 | Val AUPR: 0.8785 | Avg: 0.8791
+    Epoch  65 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8776 | Val AUPR: 0.8762 | Avg: 0.8770
+    Epoch  70 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8771 | Val AUPR: 0.8759 | Avg: 0.8783
+    Epoch  75 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8767 | Val AUPR: 0.8761 | Avg: 0.8771
+    Epoch  80 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8749 | Val AUPR: 0.8752 | Avg: 0.8715
+    Epoch  85 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8734 | Val AUPR: 0.8726 | Avg: 0.8721
+    Epoch  90 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8732 | Val AUPR: 0.8730 | Avg: 0.8754
+    Epoch  95 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8732 | Val AUPR: 0.8734 | Avg: 0.8756
+    Epoch 100 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8728 | Val AUPR: 0.8722 | Avg: 0.8738
+    Epoch 105 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8732 | Val AUPR: 0.8724 | Avg: 0.8738
+    Epoch 110 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8719 | Val AUPR: 0.8723 | Avg: 0.8736
+    Epoch 115 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8710 | Val AUPR: 0.8722 | Avg: 0.8714
+    Epoch 120 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8684 | Val AUPR: 0.8698 | Avg: 0.8714
+
+  [Final Test Evaluation]
+  RL Test AUC: 0.8721 | Test AUPR: 0.8409
+
+  [Baseline] Standard TabPFN (Last + Static)...
+  Baseline Test AUC: 0.8688 | Test AUPR: 0.8192
+  Fold 0 Results -> RL: 0.872 vs Baseline: 0.869
+
+    Pretrain Epoch 42 | Val AUPR: 0.6962                                                               [172/1823]
+    Pretrain Epoch 45 | Val AUPR: 0.6785                                                                         
+    Pretrain Epoch 48 | Val AUPR: 0.7140                                                                         
+  [Enhanced Pretraining] Completed. Best Val AUPR: 0.7140                                                        
+  [Adaptive RL] Using higher LR (0.0002) due to lower pretrain AUPR                                              
+  [Adaptive RL] Training for up to 120 epochs...                                                                 
+    Epoch   5 | Temp: 0.644 | AUPR wt: 0.32 | Val AUC: 0.7343 | Val AUPR: 0.7055 | Avg: 0.7055                   
+    Epoch  10 | Temp: 0.575 | AUPR wt: 0.35 | Val AUC: 0.7366 | Val AUPR: 0.7075 | Avg: 0.7291                   
+    Epoch  15 | Temp: 0.506 | AUPR wt: 0.38 | Val AUC: 0.7370 | Val AUPR: 0.7078 | Avg: 0.7252
+    Epoch  20 | Temp: 0.436 | AUPR wt: 0.41 | Val AUC: 0.7389 | Val AUPR: 0.7102 | Avg: 0.7152
+    Epoch  25 | Temp: 0.367 | AUPR wt: 0.44 | Val AUC: 0.7394 | Val AUPR: 0.7111 | Avg: 0.7205
+    Epoch  30 | Temp: 0.297 | AUPR wt: 0.47 | Val AUC: 0.7394 | Val AUPR: 0.7089 | Avg: 0.7226
+    Epoch  35 | Temp: 0.250 | AUPR wt: 0.50 | Val AUC: 0.7444 | Val AUPR: 0.7121 | Avg: 0.7121
+    Epoch  40 | Temp: 0.250 | AUPR wt: 0.53 | Val AUC: 0.7435 | Val AUPR: 0.7084 | Avg: 0.7146
+    Epoch  45 | Temp: 0.250 | AUPR wt: 0.56 | Val AUC: 0.7472 | Val AUPR: 0.7124 | Avg: 0.7188
+    Epoch  50 | Temp: 0.250 | AUPR wt: 0.59 | Val AUC: 0.7486 | Val AUPR: 0.7136 | Avg: 0.7176
+    Epoch  55 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7528 | Val AUPR: 0.7160 | Avg: 0.7199
+    Epoch  60 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7574 | Val AUPR: 0.7192 | Avg: 0.7191
+    Epoch  65 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7597 | Val AUPR: 0.7181 | Avg: 0.7182
+    Epoch  70 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7644 | Val AUPR: 0.7214 | Avg: 0.7226
+    Epoch  75 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7671 | Val AUPR: 0.7225 | Avg: 0.7194
+    Epoch  80 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7690 | Val AUPR: 0.7237 | Avg: 0.7181
+    Epoch  85 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7704 | Val AUPR: 0.7252 | Avg: 0.7212
+    Epoch  90 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7718 | Val AUPR: 0.7233 | Avg: 0.7224
+    Epoch  95 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7750 | Val AUPR: 0.7215 | Avg: 0.7205
+    Epoch 100 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7766 | Val AUPR: 0.7217 | Avg: 0.7156
+    Epoch 105 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7787 | Val AUPR: 0.7217 | Avg: 0.7166
+    Epoch 110 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7792 | Val AUPR: 0.7198 | Avg: 0.7176
+    Epoch 115 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7796 | Val AUPR: 0.7186 | Avg: 0.7172
+    Epoch 120 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.7792 | Val AUPR: 0.7189 | Avg: 0.7129
+
+  [Final Test Evaluation]
+  RL Test AUC: 0.9018 | Test AUPR: 0.8607
+
+  [Baseline] Standard TabPFN (Last + Static)...
+  Baseline Test AUC: 0.8888 | Test AUPR: 0.8514
+  Fold 1 Results -> RL: 0.902 vs Baseline: 0.889
+      Pretrain Epoch 48 | Val AUPR: 0.6073                                                                         
+  [Enhanced Pretraining] Completed. Best Val AUPR: 0.6646                                                        
+  [Adaptive RL] Using higher LR (0.0002) due to lower pretrain AUPR                                              
+  [Adaptive RL] Training for up to 120 epochs...                                                                 
+    Epoch   5 | Temp: 0.644 | AUPR wt: 0.32 | Val AUC: 0.8391 | Val AUPR: 0.7985 | Avg: 0.7985                   
+    Epoch  10 | Temp: 0.575 | AUPR wt: 0.35 | Val AUC: 0.8384 | Val AUPR: 0.7976 | Avg: 0.7866                   
+    Epoch  15 | Temp: 0.506 | AUPR wt: 0.38 | Val AUC: 0.8394 | Val AUPR: 0.8001 | Avg: 0.7922                   
+    Epoch  20 | Temp: 0.436 | AUPR wt: 0.41 | Val AUC: 0.8389 | Val AUPR: 0.7970 | Avg: 0.7973                   
+    Epoch  25 | Temp: 0.367 | AUPR wt: 0.44 | Val AUC: 0.8387 | Val AUPR: 0.7945 | Avg: 0.7947                   
+    Epoch  30 | Temp: 0.297 | AUPR wt: 0.47 | Val AUC: 0.8398 | Val AUPR: 0.7976 | Avg: 0.7884                   
+    Epoch  35 | Temp: 0.250 | AUPR wt: 0.50 | Val AUC: 0.8389 | Val AUPR: 0.7968 | Avg: 0.7890                   
+    Epoch  40 | Temp: 0.250 | AUPR wt: 0.53 | Val AUC: 0.8398 | Val AUPR: 0.7983 | Avg: 0.7934                   
+    Epoch  45 | Temp: 0.250 | AUPR wt: 0.56 | Val AUC: 0.8398 | Val AUPR: 0.7975 | Avg: 0.7948                   
+    Epoch  50 | Temp: 0.250 | AUPR wt: 0.59 | Val AUC: 0.8394 | Val AUPR: 0.7960 | Avg: 0.7892                   
+    Epoch  55 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8398 | Val AUPR: 0.7970 | Avg: 0.7823                   
+    Epoch  60 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8410 | Val AUPR: 0.7998 | Avg: 0.7823                   
+    Epoch  65 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8412 | Val AUPR: 0.7981 | Avg: 0.7919                   
+    Epoch  70 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8396 | Val AUPR: 0.7934 | Avg: 0.7957                   
+    Epoch  75 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8407 | Val AUPR: 0.7955 | Avg: 0.7939                   
+    Epoch  80 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8405 | Val AUPR: 0.7958 | Avg: 0.7914                   
+    Epoch  85 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8431 | Val AUPR: 0.7983 | Avg: 0.7913                   
+    Epoch  90 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8431 | Val AUPR: 0.7971 | Avg: 0.7890                   
+    Epoch  95 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8435 | Val AUPR: 0.7966 | Avg: 0.7931                   
+    Epoch 100 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8440 | Val AUPR: 0.7966 | Avg: 0.7953                   
+    Epoch 105 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8449 | Val AUPR: 0.7977 | Avg: 0.7950                   
+    Epoch 110 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8435 | Val AUPR: 0.7941 | Avg: 0.7969                   
+    Epoch 115 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8433 | Val AUPR: 0.7937 | Avg: 0.7929                   
+    Epoch 120 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.8440 | Val AUPR: 0.7946 | Avg: 0.7908                   
+                                                                                                                 
+  [Final Test Evaluation]                                                                                        
+  RL Test AUC: 0.8560 | Test AUPR: 0.8294                                                                        
+                                                                                                                 
+  [Baseline] Standard TabPFN (Last + Static)...                                                                  
+  Baseline Test AUC: 0.8475 | Test AUPR: 0.8283                                                                  
+  Fold 2 Results -> RL: 0.856 vs Baseline: 0.848                                                                 
+
+      Pretrain Epoch 48 | Val AUPR: 0.8636                                                                [60/1823]
+  [Enhanced Pretraining] Completed. Best Val AUPR: 0.8734                                                        
+  [Adaptive RL] Using standard LR (0.0001)                                                                       
+  [Adaptive RL] Training for up to 120 epochs...                                                                 
+    Epoch   5 | Temp: 0.644 | AUPR wt: 0.32 | Val AUC: 0.9123 | Val AUPR: 0.8920 | Avg: 0.8920                   
+    Epoch  10 | Temp: 0.575 | AUPR wt: 0.35 | Val AUC: 0.9136 | Val AUPR: 0.8938 | Avg: 0.8924                   
+    Epoch  15 | Temp: 0.506 | AUPR wt: 0.38 | Val AUC: 0.9145 | Val AUPR: 0.8947 | Avg: 0.8937                   
+    Epoch  20 | Temp: 0.436 | AUPR wt: 0.41 | Val AUC: 0.9154 | Val AUPR: 0.8963 | Avg: 0.8913                   
+    Epoch  25 | Temp: 0.367 | AUPR wt: 0.44 | Val AUC: 0.9168 | Val AUPR: 0.8982 | Avg: 0.8909                   
+    Epoch  30 | Temp: 0.297 | AUPR wt: 0.47 | Val AUC: 0.9168 | Val AUPR: 0.8984 | Avg: 0.8938                   
+    Epoch  35 | Temp: 0.250 | AUPR wt: 0.50 | Val AUC: 0.9181 | Val AUPR: 0.8992 | Avg: 0.8962                   
+    Epoch  40 | Temp: 0.250 | AUPR wt: 0.53 | Val AUC: 0.9172 | Val AUPR: 0.8993 | Avg: 0.8978                   
+    Epoch  45 | Temp: 0.250 | AUPR wt: 0.56 | Val AUC: 0.9190 | Val AUPR: 0.9004 | Avg: 0.8940                   
+    Epoch  50 | Temp: 0.250 | AUPR wt: 0.59 | Val AUC: 0.9199 | Val AUPR: 0.9015 | Avg: 0.8931
+    Epoch  55 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9186 | Val AUPR: 0.9002 | Avg: 0.8948
+    Epoch  60 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9190 | Val AUPR: 0.9008 | Avg: 0.8929
+    Epoch  65 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9181 | Val AUPR: 0.8998 | Avg: 0.8943
+    Epoch  70 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9177 | Val AUPR: 0.8987 | Avg: 0.8997
+    Epoch  75 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9170 | Val AUPR: 0.8979 | Avg: 0.8981
+    Epoch  80 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9190 | Val AUPR: 0.8999 | Avg: 0.8939
+    Epoch  85 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9193 | Val AUPR: 0.8998 | Avg: 0.8940
+    Epoch  90 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9190 | Val AUPR: 0.9003 | Avg: 0.8938
+    Epoch  95 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9190 | Val AUPR: 0.8999 | Avg: 0.8923
+    Epoch 100 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9190 | Val AUPR: 0.9000 | Avg: 0.8935
+    Epoch 105 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9190 | Val AUPR: 0.9002 | Avg: 0.8956
+    Epoch 110 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9195 | Val AUPR: 0.9004 | Avg: 0.8945
+    Epoch 115 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9168 | Val AUPR: 0.8972 | Avg: 0.8953
+    Epoch 120 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9172 | Val AUPR: 0.8975 | Avg: 0.8967
+
+  [Final Test Evaluation]
+  RL Test AUC: 0.8708 | Test AUPR: 0.8112
+
+  [Baseline] Standard TabPFN (Last + Static)...
+  Baseline Test AUC: 0.8567 | Test AUPR: 0.7820
+  Fold 3 Results -> RL: 0.871 vs Baseline: 0.857     
+     Pretrain Epoch 45 | Val AUPR: 0.8643                                                                 [6/1823]
+  [Enhanced Pretraining] Completed. Best Val AUPR: 0.8793                                                        
+  [Adaptive RL] Using standard LR (0.0001)                                                                       
+  [Adaptive RL] Training for up to 120 epochs...                                                                 
+    Epoch   5 | Temp: 0.644 | AUPR wt: 0.32 | Val AUC: 0.9127 | Val AUPR: 0.9156 | Avg: 0.9156                   
+    Epoch  10 | Temp: 0.575 | AUPR wt: 0.35 | Val AUC: 0.9127 | Val AUPR: 0.9161 | Avg: 0.9145                   
+    Epoch  15 | Temp: 0.506 | AUPR wt: 0.38 | Val AUC: 0.9123 | Val AUPR: 0.9158 | Avg: 0.9157                   
+    Epoch  20 | Temp: 0.436 | AUPR wt: 0.41 | Val AUC: 0.9123 | Val AUPR: 0.9153 | Avg: 0.9144
+    Epoch  25 | Temp: 0.367 | AUPR wt: 0.44 | Val AUC: 0.9123 | Val AUPR: 0.9153 | Avg: 0.9125
+    Epoch  30 | Temp: 0.297 | AUPR wt: 0.47 | Val AUC: 0.9127 | Val AUPR: 0.9161 | Avg: 0.9130
+    Epoch  35 | Temp: 0.250 | AUPR wt: 0.50 | Val AUC: 0.9131 | Val AUPR: 0.9170 | Avg: 0.9143
+    Epoch  40 | Temp: 0.250 | AUPR wt: 0.53 | Val AUC: 0.9118 | Val AUPR: 0.9150 | Avg: 0.9156
+    Epoch  45 | Temp: 0.250 | AUPR wt: 0.56 | Val AUC: 0.9118 | Val AUPR: 0.9147 | Avg: 0.9146
+    Epoch  50 | Temp: 0.250 | AUPR wt: 0.59 | Val AUC: 0.9127 | Val AUPR: 0.9161 | Avg: 0.9136
+    Epoch  55 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9123 | Val AUPR: 0.9155 | Avg: 0.9141
+    Epoch  60 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9127 | Val AUPR: 0.9159 | Avg: 0.9151
+    Epoch  65 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9123 | Val AUPR: 0.9156 | Avg: 0.9153
+    Epoch  70 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9131 | Val AUPR: 0.9161 | Avg: 0.9169
+    Epoch  75 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9114 | Val AUPR: 0.9145 | Avg: 0.9173
+    Epoch  80 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9127 | Val AUPR: 0.9159 | Avg: 0.9178
+    Epoch  85 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9127 | Val AUPR: 0.9159 | Avg: 0.9166
+    Epoch  90 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9127 | Val AUPR: 0.9159 | Avg: 0.9152
+    Epoch  95 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9123 | Val AUPR: 0.9158 | Avg: 0.9161
+    Epoch 100 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9127 | Val AUPR: 0.9159 | Avg: 0.9180
+    Epoch 105 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9114 | Val AUPR: 0.9154 | Avg: 0.9167
+    Epoch 110 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9136 | Val AUPR: 0.9169 | Avg: 0.9133
+    Epoch 115 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9127 | Val AUPR: 0.9162 | Avg: 0.9143
+    Epoch 120 | Temp: 0.250 | AUPR wt: 0.60 | Val AUC: 0.9131 | Val AUPR: 0.9166 | Avg: 0.9174
+
+  [Final Test Evaluation]
+  RL Test AUC: 0.8535 | Test AUPR: 0.8123
+
+  [Baseline] Standard TabPFN (Last + Static)...
+  Baseline Test AUC: 0.8419 | Test AUPR: 0.7482
+  Fold 4 Results -> RL: 0.853 vs Baseline: 0.842
+
+                                          
