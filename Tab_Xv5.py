@@ -79,29 +79,25 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ==============================================================================
 # 1. Feature Interaction Encoder (The "Soft" Path)
 # ==============================================================================
+# ==============================================================================
+# 1. Feature Interaction Encoder (The "Soft" Path)
+# ==============================================================================
 
 class FeatureInteractionEncoder(nn.Module):
-    """
-    Learns Cross-Feature Interactions and Temporal Motifs.
-    Output: A small latent vector Z (e.g., 16 dims) to supplement explicit stats.
-    """
     def __init__(self, num_features, hidden_dim=64, nhead=4, latent_dim=16):
         super().__init__()
         self.num_features = num_features
         self.hidden_dim = hidden_dim
 
         # A. Temporal Extractor (CNN per feature)
-        # Extracts local shapes (spikes, drops) independent of absolute value
         self.conv1 = nn.Conv1d(1, hidden_dim, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1)
         self.bn = nn.BatchNorm1d(hidden_dim)
 
         # B. Feature Identity Embedding
-        # Tells the Transformer "This vector is Creatinine", "This is BP"
         self.feature_id_embedding = nn.Parameter(torch.randn(1, num_features, hidden_dim))
 
         # C. Cross-Feature Interaction (Transformer)
-        # Allows features to attend to each other
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim, 
             nhead=nhead, 
@@ -111,8 +107,7 @@ class FeatureInteractionEncoder(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
 
-        # D. Patient Aggregation (Attention Pooling)
-        # Weights importance of each feature for the final patient representation
+        # D. Patient Aggregation
         self.attention_pool = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.Tanh(),
@@ -123,47 +118,41 @@ class FeatureInteractionEncoder(nn.Module):
         self.fc_out = nn.Linear(hidden_dim, latent_dim)
 
     def forward(self, batch_data):
-        values = batch_data['values'].to(DEVICE) # [B, L, F]
-        masks = batch_data['masks'].to(DEVICE)   # [B, L, F]
+        values = batch_data['values'].to(DEVICE) 
+        masks = batch_data['masks'].to(DEVICE)   
         
-        B, L, F = values.size()
+        # FIX: Rename F -> n_feats so we don't overwrite torch.nn.functional (F)
+        B, L, n_feats = values.size()
         H = self.hidden_dim
 
         # --- Step 1: Per-Feature Temporal Extraction (CNN) ---
-        # Reshape to [B*F, 1, L] to process all features in parallel
-        x = values.permute(0, 2, 1).reshape(B * F, 1, L)
-        m = masks.permute(0, 2, 1).reshape(B * F, 1, L)
+        # Reshape to [B*n_feats, 1, L]
+        x = values.permute(0, 2, 1).reshape(B * n_feats, 1, L)
+        m = masks.permute(0, 2, 1).reshape(B * n_feats, 1, L)
         
+        # Now F.relu works because F refers to the module, not the integer size
         x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x)) # [B*F, H, L]
+        x = F.relu(self.conv2(x)) 
         x = self.bn(x)
         
         # Mask out invalid time steps
         x = x * m 
         
-        # Max Pooling over time: Summarize "Did a specific pattern happen?"
-        # [B*F, H, L] -> [B*F, H]
+        # Max Pooling over time
         x_summ = F.max_pool1d(x, kernel_size=L).squeeze(-1)
         
-        # Reshape back to [B, F, H]
-        x_summ = x_summ.view(B, F, H)
+        # Reshape back to [B, n_feats, H]
+        x_summ = x_summ.view(B, n_feats, H)
 
         # --- Step 2: Cross-Feature Interaction (Transformer) ---
-        # Add identity embedding so Transformer knows which feature is which
         x_summ = x_summ + self.feature_id_embedding
-
-        # Transformer mixes info: [B, F, H]
         x_interact = self.transformer(x_summ) 
 
         # --- Step 3: Aggregation to Patient Vector ---
-        # Compute attention weights for each feature: [B, F, 1]
         attn_weights = self.attention_pool(x_interact)
         attn_weights = F.softmax(attn_weights, dim=1) 
         
-        # Weighted sum of features: [B, H]
         z_patient = torch.sum(x_interact * attn_weights, dim=1) 
-        
-        # Final projection: [B, latent_dim]
         z = self.fc_out(z_patient)
         
         return z
