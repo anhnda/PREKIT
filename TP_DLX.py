@@ -241,77 +241,104 @@ class GaussianRNNPolicy(nn.Module):
 # ==============================================================================
 # 3. RL Training (Robust Iterative Judge)
 # ==============================================================================
-
-def train_rnn_rl(rnn_policy, train_loader, base_tabpfn, epochs=15):
+def train_rnn_rl_split(rnn_policy, train_ds, base_tabpfn, epochs=15, split_ratio=0.1):
     """
-    Updates the Judge every 3 epochs so the agent cannot 'cheat' a frozen model.
+    Splits training data: 90% to train Judge, 10% to Reward Agent.
+    Prevents reward hacking by keeping the Judge blind to the Agent's evaluation set.
     """
     optimizer = torch.optim.Adam(rnn_policy.parameters(), lr=0.0001)
     
-    print(f"  [RL] Starting Fine-Tuning (Iterative Judge)...")
-    print(f"  {'Epoch':>5} | {'Base Prob':>10} | {'Agent Prob':>10} | {'Avg Delta':>10} | {'Reward':>8}")
+    # 1. Create the fixed split indices
+    n_samples = len(train_ds)
+    indices = list(range(n_samples))
+    random.shuffle(indices)
     
-    # Initial Environment Fit
-    env_tabpfn = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
-    last_tr, stat_tr, z_tr, y_tr = get_features_for_fitting(rnn_policy, train_loader)
+    split_point = int(n_samples * split_ratio) # 10%
+    idx_agent = indices[:split_point]          # Agent learns from this 10%
+    idx_judge = indices[split_point:]          # Judge learns from this 90%
     
-    # Augment data for Judge: [Full] + [Masked]
-    X_full = np.hstack([last_tr, stat_tr, z_tr])
-    X_masked = np.hstack([np.zeros_like(last_tr), stat_tr, z_tr])
-    env_tabpfn.fit(np.vstack([X_full, X_masked]), np.concatenate([y_tr, y_tr]))
+    print(f"  [RL] Starting Fine-Tuning (Fixed 90/10 Split)...")
+    print(f"  {'Epoch':>5} | {'Avg Reward':>10} | {'Avg Delta':>10}")
 
+    # Helper to get full batches from indices
+    def get_batch_data(dataset, indices):
+        # Create a temporary loader for these specific indices
+        sub = torch.utils.data.Subset(dataset, indices)
+        loader = DataLoader(sub, batch_size=len(sub), collate_fn=hybrid_collate_fn)
+        return next(iter(loader))
+
+    # Load the static data for Judge once (optimization)
+    batch_judge, labels_judge, static_judge = get_batch_data(train_ds, idx_judge)
+    last_judge = extract_last_raw_values(batch_judge).cpu().numpy()
+    static_judge = static_judge.numpy()
+    y_judge = labels_judge.numpy().astype(int)
+
+    # Load the data for Agent (we need this every step)
+    batch_agent, labels_agent, static_agent = get_batch_data(train_ds, idx_agent)
+    
     for epoch in range(epochs):
         rnn_policy.train()
-        track_rewards, track_deltas = [], []
-        track_base, track_agent = [], []
         
-        # --- RE-FIT JUDGE EVERY 3 EPOCHS ---
-        if epoch > 0 and epoch % 3 == 0:
-            # Refresh Z features with current policy
-            last_tr, stat_tr, z_tr, y_tr = get_features_for_fitting(rnn_policy, train_loader)
-            X_full = np.hstack([last_tr, stat_tr, z_tr])
-            X_masked = np.hstack([np.zeros_like(last_tr), stat_tr, z_tr])
-            env_tabpfn.fit(np.vstack([X_full, X_masked]), np.concatenate([y_tr, y_tr]))
-
-        for t_data, labels, s_data in train_loader:
-            optimizer.zero_grad()
-            mu, sigma = rnn_policy(t_data)
-            dist_normal = dist.Normal(mu, sigma)
-            z_action = dist_normal.sample()
-            log_prob = dist_normal.log_prob(z_action).sum(dim=1)
+        # --- STEP 1: TRAIN JUDGE (on 90% data) ---
+        # We need the CURRENT embeddings for the judge set, so we run a no_grad pass
+        with torch.no_grad():
+            mu_j, sigma_j = rnn_policy(batch_judge)
+            z_judge = dist.Normal(mu_j, sigma_j).sample().cpu().numpy()
             
-            with torch.no_grad():
-                last_vals = extract_last_raw_values(t_data).cpu().numpy()
-                static_vals = s_data.numpy()
-                z_vals = z_action.cpu().numpy()
-                y_true = labels.numpy().astype(int)
+            # Augment Judge Training (Real Z + Zeroed Z) to force robustness
+            X_judge = np.hstack([last_judge, static_judge, z_judge])
+            X_judge_masked = np.hstack([last_judge, static_judge, np.zeros_like(z_judge)])
+            
+            X_fit = np.vstack([X_judge, X_judge_masked])
+            y_fit = np.concatenate([y_judge, y_judge])
+            
+            # Fit the Judge
+            curr_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=2)
+            curr_env.fit(X_fit, y_fit)
 
-                p_base = base_tabpfn.predict_proba(np.hstack([last_vals, static_vals]))[:, 1]
-                p_env = env_tabpfn.predict_proba(np.hstack([last_vals, static_vals, z_vals]))[:, 1]
-                
-                rewards, deltas = [], []
-                for i in range(len(y_true)):
-                    target = 1.0 if y_true[i] == 1 else 0.0
-                    imp = (p_env[i] - p_base[i]) if target == 1 else (p_base[i] - p_env[i])
-                    # Clip reward to be safe
-                    r = np.clip(imp * 5.0, -2.0, 2.0)
-                    rewards.append(r)
-                    deltas.append(imp)
-                    
-                rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
-                track_base.extend(p_base); track_agent.extend(p_env)
-                track_deltas.extend(deltas); track_rewards.extend(rewards.cpu().numpy())
+        # --- STEP 2: UPDATE AGENT (on 10% data) ---
+        # Now we run the Agent on its 10% set *with gradients*
+        optimizer.zero_grad()
+        
+        mu_a, sigma_a = rnn_policy(batch_agent)
+        dist_normal = dist.Normal(mu_a, sigma_a)
+        z_action = dist_normal.sample()
+        log_prob = dist_normal.log_prob(z_action).sum(dim=1)
+        
+        # Calculate Reward (Judge predicts on Agent's data)
+        with torch.no_grad():
+            last_ag = extract_last_raw_values(batch_agent).cpu().numpy()
+            static_ag = static_agent.numpy()
+            z_ag_np = z_action.cpu().numpy()
+            y_ag_true = labels_agent.numpy().astype(int)
+            
+            # Base vs Env
+            X_base = np.hstack([last_ag, static_ag])
+            X_env = np.hstack([X_base, z_ag_np])
+            
+            p_base = base_tabpfn.predict_proba(X_base)[:, 1]
+            p_env = curr_env.predict_proba(X_env)[:, 1]
+            
+            rewards = []
+            deltas = []
+            for i in range(len(y_ag_true)):
+                target = 1.0 if y_ag_true[i] == 1 else 0.0
+                # Reward is improvement over baseline
+                imp = (p_env[i] - p_base[i]) if target == 1 else (p_base[i] - p_env[i])
+                rewards.append(np.clip(imp * 5.0, -2.0, 2.0))
+                deltas.append(imp)
+            
+            rewards_t = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
 
-            loss = -(log_prob * rewards).mean() - 0.05 * dist_normal.entropy().mean()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(rnn_policy.parameters(), max_norm=0.5)
-            optimizer.step()
+        # REINFORCE Loss
+        loss = -(log_prob * rewards_t).mean() - 0.05 * dist_normal.entropy().mean()
+        loss.backward()
+        optimizer.step()
 
         if (epoch+1) % 3 == 0:
-            print(f"  {epoch+1:05d} | {np.mean(track_base):10.4f} | {np.mean(track_agent):10.4f} | {np.mean(track_deltas):10.4f} | {np.mean(track_rewards):8.4f}")
+            print(f"  {epoch+1:05d} | {np.mean(rewards):10.4f} | {np.mean(deltas):10.4f}")
 
     return rnn_policy
-
 # ==============================================================================
 # 5. Main Execution
 # ==============================================================================
@@ -383,8 +410,8 @@ def main():
         base_tabpfn.fit(np.hstack([last_tr, stat_tr]), y_tr)
         
         # Start Training (Judge fits inside the function)
-        rnn_policy = train_rnn_rl(rnn_policy, train_loader, base_tabpfn, epochs=15)
-
+# Pass train_ds directly, not train_loader
+        rnn_policy = train_rnn_rl_split(rnn_policy, train_ds, base_tabpfn, epochs=15, split_ratio=0.1)
         # --------------------------------------------------------
         # EVALUATION: RL AGENT
         # --------------------------------------------------------
