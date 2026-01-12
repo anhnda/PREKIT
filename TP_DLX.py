@@ -293,7 +293,7 @@ def train_rnn_rl_split(rnn_policy, train_ds, base_tabpfn, epochs=15, split_ratio
             y_fit = np.concatenate([y_judge, y_judge])
             
             # Fit the Judge
-            curr_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu', N_ensemble_configurations=2)
+            curr_env = TabPFNClassifier(device='cuda' if torch.cuda.is_available() else 'cpu')
             curr_env.fit(X_fit, y_fit)
 
         # --- STEP 2: UPDATE AGENT (on 10% data) ---
