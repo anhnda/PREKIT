@@ -526,36 +526,41 @@ def train_policy_adaptive_rl(
     val_loader,
     tabpfn_params,
     pretrain_aupr,
-    epochs=120,
-    update_tabpfn_every=5
+    epochs=80,  # Reduced from 120
+    update_tabpfn_every=3  # More frequent updates
 ):
     """
-    Adaptive RL with dynamic learning rate and longer training
+    Adaptive RL with careful training to avoid degradation
+    Key fixes:
+    - Slower temperature decay
+    - Stricter early stopping
+    - Lower learning rate
+    - More frequent TabPFN updates
     """
 
-    # Adaptive learning rate based on pretraining quality
+    # More conservative learning rate
     if pretrain_aupr < 0.75:
-        lr = 0.0002
-        print(f"  [Adaptive RL] Using higher LR (0.0002) due to lower pretrain AUPR")
+        lr = 0.0001  # Reduced from 0.0002
+        print(f"  [Adaptive RL] Using higher LR (0.0001) due to lower pretrain AUPR")
     else:
-        lr = 0.0001
-        print(f"  [Adaptive RL] Using standard LR (0.0001)")
+        lr = 0.00005  # Reduced from 0.0001
+        print(f"  [Adaptive RL] Using conservative LR (0.00005)")
 
     optimizer = torch.optim.Adam(policy_net.parameters(), lr=lr)
 
     best_val_auc = 0
     best_state = None
-    patience = 30
+    patience = 15  # Reduced from 30 - stop earlier if degrading
     patience_counter = 0
 
-    print(f"  [Adaptive RL] Training for up to {epochs} epochs...")
+    print(f"  [Adaptive RL] Training for up to {epochs} epochs with strict early stopping...")
 
     tabpfn_model = None
     val_history = []
 
     for epoch in range(epochs):
-        # Conservative temperature
-        temperature = max(0.25, 0.7 - epoch / (epochs * 0.6))
+        # Slower temperature decay - keep exploration longer
+        temperature = max(0.4, 1.0 - epoch / (epochs * 1.2))  # Slower decay, higher minimum
 
         policy_net.train()
 
@@ -576,12 +581,12 @@ def train_policy_adaptive_rl(
         val_aupr = average_precision_score(y_val, y_val_proba)
         val_history.append(val_aupr)
 
-        # Compute rewards with curriculum learning
+        # Compute rewards - more conservative approach
         y_train_proba = tabpfn_model.predict_proba(X_train)[:, 1]
         rewards_smooth = np.where(y_train == 1, y_train_proba, 1 - y_train_proba)
 
-        # Dynamic AUPR weight based on training progress
-        aupr_weight = 0.3 + 0.3 * min(1.0, epoch / 50)
+        # More conservative AUPR weight - don't increase as aggressively
+        aupr_weight = 0.2 + 0.2 * min(1.0, epoch / 40)  # 0.2 → 0.4 (was 0.3 → 0.6)
 
         rewards_combined = rewards_smooth + aupr_weight * val_aupr
 
@@ -591,7 +596,8 @@ def train_policy_adaptive_rl(
         log_probs_train = log_probs_train.to(DEVICE)
         policy_loss = -(log_probs_train * rewards_tensor).mean()
 
-        entropy_bonus = 0.001 * log_probs_train.mean()
+        # Stronger entropy bonus to encourage exploration
+        entropy_bonus = 0.005 * log_probs_train.mean()  # Increased from 0.001
         total_loss = policy_loss - entropy_bonus
 
         optimizer.zero_grad()
@@ -599,8 +605,8 @@ def train_policy_adaptive_rl(
         torch.nn.utils.clip_grad_norm_(policy_net.parameters(), max_norm=0.5)
         optimizer.step()
 
-        # Validation
-        if (epoch + 1) % 5 == 0:
+        # More frequent validation to catch degradation early
+        if (epoch + 1) % 3 == 0 or epoch == 0:
             policy_net.eval()
             with torch.no_grad():
                 X_val_det, y_val_det, _ = extract_extended_features_and_logprobs(
@@ -622,18 +628,25 @@ def train_policy_adaptive_rl(
                 # Moving average for stability
                 recent_avg = np.mean(val_history[-10:]) if len(val_history) >= 10 else val_aupr_det
 
-                print(f"    Epoch {epoch+1:3d} | Temp: {temperature:.3f} | "
-                      f"Val AUC: {val_auc:.4f} | Val AUPR: {val_aupr_det:.4f} | Avg: {recent_avg:.4f}")
+                # Check for significant degradation
+                degradation_warning = ""
+                if best_val_auc > 0 and (best_val_auc - val_aupr_det) > 0.02:
+                    degradation_warning = " ⚠ DEGRADING"
 
-                # Early stopping
+                print(f"    Epoch {epoch+1:3d} | Temp: {temperature:.3f} | LR: {lr:.6f} | "
+                      f"Val AUC: {val_auc:.4f} | Val AUPR: {val_aupr_det:.4f} | "
+                      f"Best: {best_val_auc:.4f}{degradation_warning}")
+
+                # Early stopping - stricter criteria
                 if val_aupr_det > best_val_auc:
                     best_val_auc = val_aupr_det
                     best_state = copy.deepcopy(policy_net.state_dict())
                     patience_counter = 0
                 else:
                     patience_counter += 1
-                    if patience_counter >= patience:
-                        print(f"    Early stopping at epoch {epoch+1}")
+                    # Also stop if we've degraded significantly
+                    if patience_counter >= patience or (best_val_auc - val_aupr_det) > 0.05:
+                        print(f"    Early stopping at epoch {epoch+1} (patience: {patience_counter}/{patience})")
                         break
 
     if best_state is not None:
@@ -700,19 +713,20 @@ def main():
         # STEP 1: Pretraining
         policy_net, pretrain_aupr = pretrain_rnn_enhanced(policy_net, train_loader, val_loader, epochs=50)
 
-        # STEP 2: RL Fine-tuning
+        # STEP 2: RL Fine-tuning (with conservative settings)
+        print(f"\n  Starting RL fine-tuning from pretrain AUPR: {pretrain_aupr:.4f}")
         policy_net = train_policy_adaptive_rl(
             policy_net,
             train_loader,
             val_loader,
             tabpfn_params,
             pretrain_aupr,
-            epochs=120,
-            update_tabpfn_every=5
+            epochs=80,  # Reduced
+            update_tabpfn_every=3  # More frequent
         )
 
-        # Final Evaluation
-        print("\n  [Final Test Evaluation]")
+        # Final Evaluation (After RL)
+        print("\n  [Final Test Evaluation - After RL]")
         policy_net.eval()
 
         with torch.no_grad():
@@ -739,7 +753,7 @@ def main():
         fpr, tpr, _ = roc_curve(y_test_final, y_test_proba)
         ax1.plot(fpr, tpr, lw=2, label=f"Fold {fold} (AUC = {fold_auc:.3f})")
 
-        print(f"  RL Test AUC: {fold_auc:.4f} | Test AUPR: {fold_aupr:.4f}")
+        print(f"  Test AUC: {fold_auc:.4f} | Test AUPR: {fold_aupr:.4f}")
 
         # BASELINE
         print("\n  [Baseline] Standard TabPFN (Last + Static)...")
@@ -774,7 +788,7 @@ def main():
         ax2.plot(fpr_b, tpr_b, lw=2, label=f"Fold {fold} (AUC = {baseline_auc:.3f})")
 
         print(f"  Baseline Test AUC: {baseline_auc:.4f} | Test AUPR: {baseline_aupr:.4f}")
-        print(f"  Fold {fold} Results -> RL: {fold_auc:.3f} vs Baseline: {baseline_auc:.3f}")
+        print(f"  Fold {fold} Results -> Tab_Xv1: {fold_auc:.3f} vs Baseline: {baseline_auc:.3f}")
 
     # Final Plot
     for ax in [ax1, ax2]:
@@ -800,7 +814,7 @@ def main():
         base_mean, base_std = np.mean(base_metrics), np.std(base_metrics)
         improvement = ((rl_mean - base_mean) / base_mean) * 100
         symbol = "✓" if rl_mean > base_mean else "✗"
-        print(f"{name:15s} | RL: {rl_mean:.4f} ± {rl_std:.4f}  vs  Baseline: {base_mean:.4f} ± {base_std:.4f}  ({improvement:+.2f}%) {symbol}")
+        print(f"{name:15s} | Tab_Xv1: {rl_mean:.4f} ± {rl_std:.4f}  vs  Baseline: {base_mean:.4f} ± {base_std:.4f}  ({improvement:+.2f}%) {symbol}")
 
     print_stat("AUC", metrics_rl['auc'], metrics_baseline['auc'])
     print_stat("AUC-PR", metrics_rl['auc_pr'], metrics_baseline['auc_pr'])
@@ -811,6 +825,13 @@ def main():
     print("✓ Attention mechanism focuses on critical events")
     print("✓ Raw last values as hard anchor (skip connection)")
     print("✓ Learned context Z captures complex temporal dependencies")
+    print("\nTRAINING IMPROVEMENTS vs RLv4:")
+    print("✓ More conservative learning rate (0.00005 vs 0.0001)")
+    print("✓ Slower temperature decay (0.4 min vs 0.25)")
+    print("✓ Stricter early stopping (15 patience vs 30)")
+    print("✓ More frequent validation (every 3 epochs vs 5)")
+    print("✓ Stronger entropy bonus (0.005 vs 0.001)")
+    print("✓ Conservative reward weighting (0.2-0.4 vs 0.3-0.6)")
     print("="*80)
 
 if __name__ == "__main__":

@@ -26,17 +26,14 @@ class DeepStatisticalTemporalEncoder(nn.Module):
     def __init__(self, input_dim, hidden_dim, latent_dim, time_dim=32):
         super().__init__()
         self.hidden_dim = hidden_dim
-        
+
         # 1. Feature Projection (Value + Mask)
         self.input_proj = nn.Linear(input_dim * 2, hidden_dim)
-        
+
         # 2. Time Embedding
         self.time_embed = ContinuousTimeEmbedding(time_dim)
-        
+
         # 3. Bi-Directional GRU
-        # Bi-directionality allows the model to see 'future' context to determine 
-        # if a point is a local max/min or part of a slope.
-        # Input size: projected_features + time_embedding
         rnn_input_dim = hidden_dim + time_dim
         self.rnn = nn.GRU(
             input_size=rnn_input_dim,
@@ -46,27 +43,53 @@ class DeepStatisticalTemporalEncoder(nn.Module):
             bidirectional=True,
             dropout=0.1
         )
-        
-        # 4. Attention Mechanism
-        # Learns which time steps are most critical (Learning "Count" / relevance)
-        self.attention = nn.Sequential(
+
+        # 4. Multi-Head Statistical Extractors
+        # Each head focuses on a specific statistic
+
+        # Attention for weighted mean
+        self.attention_mean = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, 1)
         )
 
+        # Attention for variance/std (focus on deviations)
+        self.attention_std = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+        # Trend/Slope detector
+        self.trend_detector = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim * 2)
+        )
+
+        # Count/Density estimator (based on mask patterns)
+        self.density_estimator = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim * 2)
+        )
+
         # 5. Output Projection
-        # We concatenate: 
-        # - Last Hidden State (Forward) -> Like "Last"
-        # - Last Hidden State (Backward) -> Context
-        # - Max Pool over time -> Like "Max"
-        # - Avg Pool over time -> Like "Mean"
-        # - Attention Context -> Learned relevance
-        
-        concat_dim = (hidden_dim * 2) * 3  # (Last + Max + Avg) * bidirectional
-        
+        # Concatenate ALL statistical views:
+        # - Last (forward & backward)
+        # - Max pooling
+        # - Min pooling  [NEW]
+        # - Mean (attention-weighted)
+        # - Std estimation  [NEW]
+        # - Trend/Slope  [NEW]
+        # - Density/Count  [NEW]
+
+        concat_dim = (hidden_dim * 2) * 7  # 7 statistical views * bidirectional
+
         self.fc_mean = nn.Linear(concat_dim, latent_dim)
         self.fc_logstd = nn.Linear(concat_dim, latent_dim)
+        self.latent_dim = latent_dim
 
     def forward(self, batch_data, deterministic=False, temperature=1.0):
         # Unpack data
@@ -118,35 +141,61 @@ class DeepStatisticalTemporalEncoder(nn.Module):
         rnn_outputs = rnn_outputs * mask_seq
 
         # --- Statistical Abstractions (The "Learnable" Part) ---
-        
-        # 1. Last State (Equivalent to "Last Value")
-        # We need to grab the last valid time step for each batch
-        # Gather indices: lengths - 1
-        idx = (lengths - 1).view(-1, 1).expand(B, rnn_outputs.size(2)).unsqueeze(1)
-        last_state = rnn_outputs.gather(1, idx).squeeze(1) # [B, hidden*2]
 
-        # 2. Max Pooling (Equivalent to "Max" / "Peak Detection")
-        # Mask padding with -inf before max
+        # 1. Last State (Equivalent to "Last Value")
+        idx = (lengths - 1).view(-1, 1).expand(B, rnn_outputs.size(2)).unsqueeze(1)
+        last_state = rnn_outputs.gather(1, idx).squeeze(1)  # [B, hidden*2]
+
+        # 2. Max Pooling (Equivalent to "Max")
         masked_for_max = rnn_outputs.clone()
         masked_for_max[mask_seq.expand_as(rnn_outputs) == 0] = -1e9
-        max_pool = torch.max(masked_for_max, dim=1)[0] # [B, hidden*2]
+        max_pool = torch.max(masked_for_max, dim=1)[0]  # [B, hidden*2]
 
-        # 3. Average Pooling (Equivalent to "Mean")
-        sum_pool = torch.sum(rnn_outputs, dim=1)
-        avg_pool = sum_pool / (lengths.unsqueeze(1).float() + 1e-6) # [B, hidden*2]
+        # 3. Min Pooling (Equivalent to "Min") [NEW]
+        masked_for_min = rnn_outputs.clone()
+        masked_for_min[mask_seq.expand_as(rnn_outputs) == 0] = 1e9
+        min_pool = torch.min(masked_for_min, dim=1)[0]  # [B, hidden*2]
 
-        # 4. Attention (Optional: Focus on specific critical events)
-        attn_weights = self.attention(rnn_outputs) # [B, L, 1]
-        attn_weights = attn_weights.masked_fill(mask_seq == 0, -1e9)
-        attn_weights = F.softmax(attn_weights, dim=1)
-        context_vec = torch.sum(rnn_outputs * attn_weights, dim=1) # [B, hidden*2]
+        # 4. Mean via Attention (Equivalent to "Mean")
+        attn_weights_mean = self.attention_mean(rnn_outputs)  # [B, L, 1]
+        attn_weights_mean = attn_weights_mean.masked_fill(mask_seq == 0, -1e9)
+        attn_weights_mean = F.softmax(attn_weights_mean, dim=1)
+        mean_vec = torch.sum(rnn_outputs * attn_weights_mean, dim=1)  # [B, hidden*2]
+
+        # 5. Std via Attention (Equivalent to "Std") [NEW]
+        # Compute variance by attending to deviations from mean
+        attn_weights_std = self.attention_std(rnn_outputs)  # [B, L, 1]
+        attn_weights_std = attn_weights_std.masked_fill(mask_seq == 0, -1e9)
+        attn_weights_std = F.softmax(attn_weights_std, dim=1)
+
+        # Weighted variance computation
+        deviations = rnn_outputs - mean_vec.unsqueeze(1)
+        variance_vec = torch.sum(attn_weights_std * (deviations ** 2), dim=1)
+        std_vec = torch.sqrt(variance_vec + 1e-6)  # [B, hidden*2]
+
+        # 6. Trend/Slope Detection (Equivalent to "Slope") [NEW]
+        # Compare first and last states with learned transformation
+        first_state = rnn_outputs[:, 0, :]  # [B, hidden*2]
+        trend_vec = self.trend_detector(last_state - first_state)  # [B, hidden*2]
+
+        # 7. Density/Count Estimation (Equivalent to "Count") [NEW]
+        # Based on average pooling with density transformation
+        sum_pool = torch.sum(rnn_outputs * mask_seq, dim=1)
+        avg_pool = sum_pool / (lengths.unsqueeze(1).float() + 1e-6)
+        density_vec = self.density_estimator(avg_pool)  # [B, hidden*2]
 
         # --- Concatenation ---
-        # Combine all statistical views
-        # Note: I used context_vec instead of simple avg_pool here, 
-        # or you can use both. Let's use Last + Max + Context(Weighted Mean)
-        # The latent Z will now contain structural info about peaks, averages, and latest trends.
-        combined = torch.cat([last_state, max_pool, context_vec], dim=1)
+        # Combine ALL 7 statistical views
+        # This gives the model explicit access to all handcrafted statistics
+        combined = torch.cat([
+            last_state,   # Last
+            max_pool,     # Max
+            min_pool,     # Min [NEW]
+            mean_vec,     # Mean
+            std_vec,      # Std [NEW]
+            trend_vec,    # Slope/Trend [NEW]
+            density_vec   # Count/Density [NEW]
+        ], dim=1)
 
         # --- Latent Projection ---
         mean = self.fc_mean(combined)
@@ -164,3 +213,78 @@ class DeepStatisticalTemporalEncoder(nn.Module):
             log_prob = policy_dist.log_prob(z).sum(dim=-1)
 
         return z, log_prob, mean
+
+    def extract_statistics(self, batch_data):
+        """
+        Extract learned statistics explicitly for auxiliary supervision.
+        Returns a dictionary of learned statistics that can be compared to handcrafted features.
+        """
+        times = batch_data['times'].to(DEVICE)
+        values = batch_data['values'].to(DEVICE)
+        masks = batch_data['masks'].to(DEVICE)
+        lengths = batch_data['lengths'].to(DEVICE)
+
+        B, L, D = values.size()
+
+        # Preprocessing
+        prev_times = torch.cat([torch.zeros(B, 1).to(DEVICE), times[:, :-1]], dim=1)
+        delta_t = (times - prev_times).unsqueeze(-1)
+        t_embed = self.time_embed(delta_t)
+
+        inputs = torch.cat([values, masks], dim=-1)
+        x_embed = self.input_proj(inputs)
+        rnn_input = torch.cat([x_embed, t_embed], dim=-1)
+
+        # RNN processing
+        packed_input = nn.utils.rnn.pack_padded_sequence(
+            rnn_input, lengths.cpu(), batch_first=True, enforce_sorted=False
+        )
+        packed_output, _ = self.rnn(packed_input)
+        rnn_outputs, _ = nn.utils.rnn.pad_packed_sequence(
+            packed_output, batch_first=True, total_length=L
+        )
+
+        mask_seq = torch.arange(L, device=DEVICE).expand(B, L) < lengths.unsqueeze(1)
+        mask_seq = mask_seq.unsqueeze(-1).float()
+        rnn_outputs = rnn_outputs * mask_seq
+
+        # Extract all statistics
+        idx = (lengths - 1).view(-1, 1).expand(B, rnn_outputs.size(2)).unsqueeze(1)
+        last_state = rnn_outputs.gather(1, idx).squeeze(1)
+
+        masked_for_max = rnn_outputs.clone()
+        masked_for_max[mask_seq.expand_as(rnn_outputs) == 0] = -1e9
+        max_pool = torch.max(masked_for_max, dim=1)[0]
+
+        masked_for_min = rnn_outputs.clone()
+        masked_for_min[mask_seq.expand_as(rnn_outputs) == 0] = 1e9
+        min_pool = torch.min(masked_for_min, dim=1)[0]
+
+        attn_weights_mean = self.attention_mean(rnn_outputs)
+        attn_weights_mean = attn_weights_mean.masked_fill(mask_seq == 0, -1e9)
+        attn_weights_mean = F.softmax(attn_weights_mean, dim=1)
+        mean_vec = torch.sum(rnn_outputs * attn_weights_mean, dim=1)
+
+        attn_weights_std = self.attention_std(rnn_outputs)
+        attn_weights_std = attn_weights_std.masked_fill(mask_seq == 0, -1e9)
+        attn_weights_std = F.softmax(attn_weights_std, dim=1)
+        deviations = rnn_outputs - mean_vec.unsqueeze(1)
+        variance_vec = torch.sum(attn_weights_std * (deviations ** 2), dim=1)
+        std_vec = torch.sqrt(variance_vec + 1e-6)
+
+        first_state = rnn_outputs[:, 0, :]
+        trend_vec = self.trend_detector(last_state - first_state)
+
+        sum_pool = torch.sum(rnn_outputs * mask_seq, dim=1)
+        avg_pool = sum_pool / (lengths.unsqueeze(1).float() + 1e-6)
+        density_vec = self.density_estimator(avg_pool)
+
+        return {
+            'last': last_state,
+            'max': max_pool,
+            'min': min_pool,
+            'mean': mean_vec,
+            'std': std_vec,
+            'trend': trend_vec,
+            'density': density_vec
+        }
