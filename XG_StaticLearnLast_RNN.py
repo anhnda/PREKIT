@@ -393,9 +393,8 @@ def main():
         ratio = np.sum(y_train==0) / (np.sum(y_train==1) + 1e-6)
         
         clf = XGBClassifier(
-            n_estimators=1000, max_depth=4, learning_rate=0.03,
-            subsample=0.8, colsample_bytree=0.8, scale_pos_weight=ratio, 
-            early_stopping_rounds=30, eval_metric='auc', random_state=42
+            n_estimators=500, max_depth=6, learning_rate=0.05, 
+            scale_pos_weight=ratio, eval_metric='auc', random_state=42
         )
         clf.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         
