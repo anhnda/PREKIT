@@ -256,7 +256,7 @@ def main():
             'objective': 'binary:logistic',
             'random_state': xseed + fold,
             'eval_metric': 'auc',
-            'tree_method': 'gpu_hist' if torch.cuda.is_available() else 'hist'
+            'tree_method': 'hist'
         }
         xgb_model = XGBClassifier(**xgb_params)
         xgb_model.fit(X_train, y_train)
