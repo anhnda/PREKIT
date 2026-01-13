@@ -315,7 +315,7 @@ def train_encoder_task_driven(encoder, train_loader, val_loader, baseline_dim, l
     )
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=7, verbose=True
+        optimizer, mode='max', factor=0.5, patience=7
     )
 
     criterion = nn.BCELoss()
