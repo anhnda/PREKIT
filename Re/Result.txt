@@ -30,3 +30,6 @@ Tab_RLv5B.py
 AUC             | RL: 0.8563 ± 0.0112  vs  Baseline: 0.8343 ± 0.0245  (+2.64%) ✓
 AUC-PR          | RL: 0.7984 ± 0.0228  vs  Baseline: 0.7713 ± 0.0456  (+3.51%) ✓
 
+AUC    | Tab_Xv6: 0.8626±0.0208 vs Baseline: 0.8608±0.0167 (+0.21%) ✓
+AUC-PR | Tab_Xv6: 0.8200±0.0327 vs Baseline: 0.8058±0.0364 (+1.76%) ✓
+
