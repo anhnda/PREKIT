@@ -1,22 +1,24 @@
 """
-Tab_Xv6: Rich Handcrafted Features + Learned Latent
+Tab_Xv6: Extended Handcrafted + RL-Optimized Learned Features
 
-CRITICAL INSIGHT from comparing Tab_RLv4 vs Baseline:
-- Baseline uses: getMeasuresBetween(..., "last") → ONLY last value per feature
-- Tab_RLv4 extracts: [last, mean, std, min, max, slope, count] per feature → 7x richer!
+PROVEN RESULTS:
+- Tab_Xv5 (Extended handcrafted only): +1.63% AUPR ✓
+- Tab_RLv4 (Extended handcrafted + RL learned): +3.11% AUPR ✓
 
-The SUCCESS of Tab_RLv4 comes from TWO things:
-1. Rich handcrafted features (7 stats per temporal feature) instead of just "last"
-2. Learned latent features on top
+STRATEGY:
+1. Use extended handcrafted features [Static + 7 stats per temporal feature]
+   → Proven to work (+1.63% AUPR)
 
-This version:
-1. Extracts SAME extended handcrafted features as Tab_RLv4 (7 stats per temporal feature)
-2. Adds learned latent features (32-dim) using Bi-GRU + Attention
-3. Simple supervised training (no RL complexity)
+2. Add RL-optimized learned latent features
+   → Use TabPFN DIRECTLY during training (no neural head mismatch)
+   → Should add ~1.5% more AUPR on top
 
-Expected improvement:
-- Extended handcrafted alone should boost performance
-- Learned latent provides additional complementary patterns
+3. Simpler than Tab_RLv4:
+   - Skip lengthy pretraining (50 epochs)
+   - Direct RL training with extended handcrafted base
+   - Faster convergence since handcrafted features already strong
+
+Expected: +2.5% to +3.5% AUPR improvement over baseline
 """
 
 import pandas as pd
@@ -27,6 +29,7 @@ from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributions as dist
 from torch.utils.data import Dataset, DataLoader
 import random
 import os
@@ -77,12 +80,7 @@ from TimeEmbeddingVal import (
     load_and_prepare_patients,
     split_patients_train_val,
 )
-
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# ==============================================================================
-# Static Features (like Tab_RLv4)
-# ==============================================================================
+from TimeEmbedding import DEVICE, TimeEmbeddedRNNCell
 
 FIXED_FEATURES = [
     "age", "gender", "race", "chronic_pulmonary_disease", "ckd_stage",
@@ -91,6 +89,10 @@ FIXED_FEATURES = [
     "microangiopathy", "uti", "oasis", "saps2", "sofa",
     "mechanical_ventilation", "use_NaHCO3", "preiculos", "gcs_unable"
 ]
+
+# ==============================================================================
+# 1. Static Encoder (from Tab_RLv4)
+# ==============================================================================
 
 class SimpleStaticEncoder:
     def __init__(self, features):
@@ -132,85 +134,10 @@ class SimpleStaticEncoder:
         return vec
 
 # ==============================================================================
-# Temporal Encoder
+# 2. Dataset
 # ==============================================================================
 
-class TemporalFeatureEncoder(nn.Module):
-    """
-    Bi-GRU + Multi-head Attention encoder for learning complementary features
-    """
-    def __init__(self, num_features, hidden_dim=64, latent_dim=32, num_heads=4):
-        super().__init__()
-        self.num_features = num_features
-        self.hidden_dim = hidden_dim
-        self.latent_dim = latent_dim
-
-        # Bi-directional GRU
-        self.gru = nn.GRU(
-            num_features,
-            hidden_dim,
-            num_layers=2,
-            batch_first=True,
-            bidirectional=True,
-            dropout=0.2
-        )
-
-        # Multi-head attention
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim * 2,
-            num_heads=num_heads,
-            dropout=0.1,
-            batch_first=True
-        )
-
-        # Learnable query
-        self.query = nn.Parameter(torch.randn(1, 1, hidden_dim * 2))
-
-        # Projection to latent space
-        self.latent_head = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(hidden_dim, latent_dim)
-        )
-
-    def forward(self, batch_data):
-        values = batch_data['values'].to(DEVICE)
-        masks = batch_data['masks'].to(DEVICE)
-        lengths = batch_data['lengths'].to(DEVICE)
-
-        batch_size = values.shape[0]
-        masked_values = values * masks
-
-        # Pack and process through GRU
-        packed = nn.utils.rnn.pack_padded_sequence(
-            masked_values,
-            lengths.cpu(),
-            batch_first=True,
-            enforce_sorted=False
-        )
-        gru_out, _ = self.gru(packed)
-        gru_out, _ = nn.utils.rnn.pad_packed_sequence(gru_out, batch_first=True)
-
-        # Attention pooling
-        query = self.query.expand(batch_size, -1, -1)
-        attn_mask = (masks.sum(dim=-1) == 0)
-        attn_out, _ = self.attention(query, gru_out, gru_out, key_padding_mask=attn_mask)
-
-        context = attn_out.squeeze(1)
-        latent = self.latent_head(context)
-
-        return latent
-
-# ==============================================================================
-# Dataset with EXTENDED Handcrafted Feature Extraction
-# ==============================================================================
-
-class ExtendedDataset(Dataset):
-    """
-    Like Tab_RLv4: Extract 7 statistics per temporal feature
-    """
+class HybridDataset(Dataset):
     def __init__(self, patients, feature_names, static_encoder, normalization_stats=None):
         self.data = []
         self.labels = []
@@ -265,8 +192,7 @@ class ExtendedDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx], self.labels[idx], self.static_data[idx]
 
-
-def extended_collate_fn(batch):
+def hybrid_collate_fn(batch):
     data_list, label_list, static_list = zip(*batch)
     lengths = [len(d['times']) for d in data_list]
     max_len = max(lengths)
@@ -291,241 +217,282 @@ def extended_collate_fn(batch):
     }
     return temporal_batch, torch.tensor(label_list, dtype=torch.float32), torch.stack(static_list)
 
+# ==============================================================================
+# 3. RNN Policy Network (from Tab_RLv4, but simpler)
+# ==============================================================================
+
+class RNNPolicyNetwork(nn.Module):
+    def __init__(self, input_dim, hidden_dim, latent_dim, time_dim=32):
+        super().__init__()
+        self.rnn_cell = TimeEmbeddedRNNCell(input_dim, hidden_dim, time_dim)
+        self.fc_mean = nn.Linear(hidden_dim, latent_dim)
+        self.fc_logstd = nn.Linear(hidden_dim, latent_dim)
+        self.latent_dim = latent_dim
+        self.hidden_dim = hidden_dim
+
+    def forward(self, batch_data, deterministic=False, temperature=1.0):
+        times = batch_data['times'].to(DEVICE)
+        values = batch_data['values'].to(DEVICE)
+        masks = batch_data['masks'].to(DEVICE)
+        lengths = batch_data['lengths'].to(DEVICE)
+
+        h = self.rnn_cell(times, values, masks, lengths)
+        mean = self.fc_mean(h)
+        log_std = self.fc_logstd(h)
+        log_std = torch.clamp(log_std, min=-20, max=2)
+        std = torch.exp(log_std) * temperature
+
+        policy_dist = dist.Normal(mean, std)
+
+        if deterministic:
+            z = mean
+            log_prob = None
+        else:
+            z = policy_dist.rsample()
+            log_prob = policy_dist.log_prob(z).sum(dim=-1)
+
+        return z, log_prob, mean
 
 # ==============================================================================
-# Extended Feature Extraction (SAME as Tab_RLv4!)
+# 4. Extended Feature Extraction (SAME as Tab_RLv4)
 # ==============================================================================
 
-def extract_extended_handcrafted_features(batch_data, static_data):
+def extract_extended_features_and_logprobs(policy_net, loader, deterministic=False, temperature=1.0):
     """
-    Extract 7 statistics per temporal feature:
-    [last, mean, std, min, max, slope, count] for each feature
-
-    This is THE KEY that makes Tab_RLv4 work!
+    Extract: [Static + 7 stats per temporal feature + Learned Latent]
     """
-    vals = batch_data['values'].cpu().numpy()
-    masks = batch_data['masks'].cpu().numpy()
-    times = batch_data['times'].cpu().numpy()
-    s_np = static_data.numpy()
+    policy_net.eval() if deterministic else policy_net.train()
 
-    batch_features = []
-
-    for i in range(len(vals)):
-        patient_stats = []
-
-        for f_idx in range(vals.shape[2]):
-            f_vals = vals[i, :, f_idx]
-            f_mask = masks[i, :, f_idx]
-            f_times = times[i, :]
-            valid_idx = np.where(f_mask > 0)[0]
-
-            if len(valid_idx) > 0:
-                valid_vals = f_vals[valid_idx]
-                valid_times = f_times[valid_idx]
-
-                last = valid_vals[-1]
-                mean_val = np.mean(valid_vals)
-                std_val = np.std(valid_vals) if len(valid_vals) > 1 else 0.0
-                min_val = np.min(valid_vals)
-                max_val = np.max(valid_vals)
-                count = len(valid_vals)
-
-                if len(valid_vals) >= 2:
-                    slope = (valid_vals[-1] - valid_vals[0]) / (valid_times[-1] - valid_times[0] + 1e-6)
-                else:
-                    slope = 0.0
-
-                patient_stats.extend([last, mean_val, std_val, min_val, max_val, slope, count])
-            else:
-                patient_stats.extend([0.0] * 7)
-
-        batch_features.append(patient_stats)
-
-    extended_handcrafted = np.array(batch_features)
-
-    # Combine: [Static + Extended Handcrafted Features]
-    combined = np.hstack([s_np, extended_handcrafted])
-
-    return combined
-
-
-def extract_all_features(encoder, loader):
-    """
-    Extract: [Static + Extended Handcrafted (7 per temporal feat) + Learned Latent]
-    """
-    encoder.eval()
     all_features = []
     all_labels = []
+    all_log_probs = []
 
-    with torch.no_grad():
+    with torch.set_grad_enabled(not deterministic):
         for t_data, labels, s_data in loader:
-            # Extended handcrafted features
-            handcrafted_features = extract_extended_handcrafted_features(t_data, s_data)
+            z, log_prob, mean = policy_net(t_data, deterministic=deterministic, temperature=temperature)
+            z_np = (mean if deterministic else z).detach().cpu().numpy()
 
-            # Learned latent features
-            learned_latent = encoder(t_data).cpu().numpy()
+            vals = t_data['values'].cpu().numpy()
+            masks = t_data['masks'].cpu().numpy()
+            times = t_data['times'].cpu().numpy()
 
-            # Combine ALL features
-            combined = np.hstack([handcrafted_features, learned_latent])
+            batch_last_vals = []
+            batch_mean_vals = []
+            batch_std_vals = []
+            batch_min_vals = []
+            batch_max_vals = []
+            batch_slope_vals = []
+            batch_count_vals = []
+
+            for i in range(len(vals)):
+                patient_last = []
+                patient_mean = []
+                patient_std = []
+                patient_min = []
+                patient_max = []
+                patient_slope = []
+                patient_count = []
+
+                for f_idx in range(vals.shape[2]):
+                    f_vals = vals[i, :, f_idx]
+                    f_mask = masks[i, :, f_idx]
+                    f_times = times[i, :]
+                    valid_idx = np.where(f_mask > 0)[0]
+
+                    if len(valid_idx) > 0:
+                        valid_vals = f_vals[valid_idx]
+                        valid_times = f_times[valid_idx]
+
+                        patient_last.append(valid_vals[-1])
+                        patient_mean.append(np.mean(valid_vals))
+                        patient_std.append(np.std(valid_vals) if len(valid_vals) > 1 else 0.0)
+                        patient_min.append(np.min(valid_vals))
+                        patient_max.append(np.max(valid_vals))
+                        patient_count.append(len(valid_vals))
+
+                        if len(valid_vals) >= 2:
+                            slope = (valid_vals[-1] - valid_vals[0]) / (valid_times[-1] - valid_times[0] + 1e-6)
+                        else:
+                            slope = 0.0
+                        patient_slope.append(slope)
+                    else:
+                        patient_last.append(0.0)
+                        patient_mean.append(0.0)
+                        patient_std.append(0.0)
+                        patient_min.append(0.0)
+                        patient_max.append(0.0)
+                        patient_slope.append(0.0)
+                        patient_count.append(0.0)
+
+                batch_last_vals.append(patient_last)
+                batch_mean_vals.append(patient_mean)
+                batch_std_vals.append(patient_std)
+                batch_min_vals.append(patient_min)
+                batch_max_vals.append(patient_max)
+                batch_slope_vals.append(patient_slope)
+                batch_count_vals.append(patient_count)
+
+            last_vals_arr = np.array(batch_last_vals)
+            mean_vals_arr = np.array(batch_mean_vals)
+            std_vals_arr = np.array(batch_std_vals)
+            min_vals_arr = np.array(batch_min_vals)
+            max_vals_arr = np.array(batch_max_vals)
+            slope_vals_arr = np.array(batch_slope_vals)
+            count_vals_arr = np.array(batch_count_vals)
+            s_np = s_data.numpy()
+
+            # Extended features + learned latent
+            combined = np.hstack([
+                s_np, last_vals_arr, mean_vals_arr, std_vals_arr,
+                min_vals_arr, max_vals_arr, slope_vals_arr, count_vals_arr, z_np
+            ])
 
             all_features.append(combined)
             all_labels.extend(labels.numpy())
 
-    return np.vstack(all_features), np.array(all_labels)
+            if not deterministic and log_prob is not None:
+                all_log_probs.append(log_prob)
 
+    features = np.vstack(all_features)
+    labels = np.array(all_labels)
+    log_probs = torch.cat(all_log_probs) if all_log_probs else None
+
+    return features, labels, log_probs
 
 # ==============================================================================
-# Training
+# 5. Simplified RL Training (No Pretraining)
 # ==============================================================================
 
-class ClassificationHead(nn.Module):
-    def __init__(self, input_dim, hidden_dim=128):
-        super().__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.bn1 = nn.BatchNorm1d(hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim // 2)
-        self.bn2 = nn.BatchNorm1d(hidden_dim // 2)
-        self.fc3 = nn.Linear(hidden_dim // 2, 1)
-        self.dropout = nn.Dropout(0.3)
+def train_policy_rl(
+    policy_net,
+    train_loader,
+    val_loader,
+    tabpfn_params,
+    epochs=80,
+    update_tabpfn_every=5
+):
+    """
+    Simplified RL training:
+    - No pretraining (extended handcrafted features already strong)
+    - Direct RL optimization with TabPFN rewards
+    """
+    print("  [RL Training] Optimizing learned features for TabPFN directly...")
 
-    def forward(self, x):
-        x = F.relu(self.bn1(self.fc1(x)))
-        x = self.dropout(x)
-        x = F.relu(self.bn2(self.fc2(x)))
-        x = self.dropout(x)
-        return torch.sigmoid(self.fc3(x))
+    optimizer = torch.optim.Adam(policy_net.parameters(), lr=0.0001)
 
-
-def train_encoder(encoder, train_loader, val_loader, num_static_feats, num_temporal_feats, latent_dim, epochs=80):
-    print("  [Training] Task-driven encoder with extended features...")
-
-    # Feature dimensions:
-    # Static: num_static_feats
-    # Extended handcrafted: num_temporal_feats * 7
-    # Learned latent: latent_dim
-    total_dim = num_static_feats + num_temporal_feats * 7 + latent_dim
-
-    classifier = ClassificationHead(total_dim).to(DEVICE)
-
-    optimizer = torch.optim.Adam(
-        list(encoder.parameters()) + list(classifier.parameters()),
-        lr=0.001,
-        weight_decay=1e-5
-    )
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=7
-    )
-
-    criterion = nn.BCELoss()
-
-    best_aupr = 0
+    best_val_aupr = 0
     best_state = None
-    patience = 15
-    counter = 0
+    patience = 20
+    patience_counter = 0
+
+    tabpfn_model = None
 
     for epoch in range(epochs):
-        encoder.train()
-        classifier.train()
+        # Temperature annealing
+        temperature = max(0.3, 0.8 - epoch / (epochs * 0.7))
 
-        total_loss = 0
-        num_batches = 0
+        policy_net.train()
 
-        for t_data, labels, s_data in train_loader:
-            labels = labels.to(DEVICE)
+        # Extract features with stochastic sampling
+        X_train, y_train, log_probs_train = extract_extended_features_and_logprobs(
+            policy_net, train_loader, deterministic=False, temperature=temperature
+        )
 
-            # Extract extended handcrafted features
-            handcrafted_feats = extract_extended_handcrafted_features(t_data, s_data)
-            handcrafted_feats = torch.tensor(handcrafted_feats, dtype=torch.float32).to(DEVICE)
+        # Update TabPFN periodically
+        if epoch % update_tabpfn_every == 0 or tabpfn_model is None:
+            tabpfn_model = TabPFNClassifier(**tabpfn_params)
+            tabpfn_model.fit(X_train, y_train)
 
-            # Extract learned latent
-            learned_latent = encoder(t_data)
+        # Compute rewards using validation set
+        X_val_stoch, y_val, _ = extract_extended_features_and_logprobs(
+            policy_net, val_loader, deterministic=False, temperature=temperature
+        )
 
-            # Combine all features
-            combined = torch.cat([handcrafted_feats, learned_latent], dim=1)
+        y_val_proba = tabpfn_model.predict_proba(X_val_stoch)[:, 1]
+        val_aupr = average_precision_score(y_val, y_val_proba)
 
-            # Classification loss
-            preds = classifier(combined).squeeze(-1)
-            loss = criterion(preds, labels)
+        # Training rewards
+        y_train_proba = tabpfn_model.predict_proba(X_train)[:, 1]
+        rewards_smooth = np.where(y_train == 1, y_train_proba, 1 - y_train_proba)
+        rewards_combined = rewards_smooth + 0.5 * val_aupr
 
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                list(encoder.parameters()) + list(classifier.parameters()),
-                max_norm=1.0
-            )
-            optimizer.step()
+        rewards_tensor = torch.tensor(rewards_combined, dtype=torch.float32).to(DEVICE)
+        rewards_tensor = (rewards_tensor - rewards_tensor.mean()) / (rewards_tensor.std() + 1e-8)
 
-            total_loss += loss.item()
-            num_batches += 1
+        # Policy gradient
+        log_probs_train = log_probs_train.to(DEVICE)
+        policy_loss = -(log_probs_train * rewards_tensor).mean()
+        entropy_bonus = 0.001 * log_probs_train.mean()
+        total_loss = policy_loss - entropy_bonus
 
-        avg_loss = total_loss / num_batches
+        optimizer.zero_grad()
+        total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(policy_net.parameters(), max_norm=0.5)
+        optimizer.step()
 
-        # Validation
-        if (epoch + 1) % 2 == 0:
-            encoder.eval()
-            classifier.eval()
-            all_preds, all_labels = [], []
-
+        # Validation every 5 epochs
+        if (epoch + 1) % 5 == 0:
+            policy_net.eval()
             with torch.no_grad():
-                for t_data, labels, s_data in val_loader:
-                    handcrafted_feats = extract_extended_handcrafted_features(t_data, s_data)
-                    handcrafted_feats = torch.tensor(handcrafted_feats, dtype=torch.float32).to(DEVICE)
-                    learned_latent = encoder(t_data)
-                    combined = torch.cat([handcrafted_feats, learned_latent], dim=1)
-                    preds = classifier(combined).squeeze(-1)
+                X_val_det, y_val_det, _ = extract_extended_features_and_logprobs(
+                    policy_net, val_loader, deterministic=True
+                )
 
-                    all_preds.extend(preds.cpu().numpy())
-                    all_labels.extend(labels.numpy())
+                X_train_det, y_train_det, _ = extract_extended_features_and_logprobs(
+                    policy_net, train_loader, deterministic=True
+                )
 
-            val_auc = roc_auc_score(all_labels, all_preds)
-            val_aupr = average_precision_score(all_labels, all_preds)
-            scheduler.step(val_aupr)
+                tabpfn_val_model = TabPFNClassifier(**tabpfn_params)
+                tabpfn_val_model.fit(X_train_det, y_train_det)
 
-            print(f"    Epoch {epoch+1:3d} | Loss: {avg_loss:.4f} | Val AUC: {val_auc:.4f} | Val AUPR: {val_aupr:.4f}")
+                y_val_proba_det = tabpfn_val_model.predict_proba(X_val_det)[:, 1]
+                val_auc = roc_auc_score(y_val_det, y_val_proba_det)
+                val_aupr_det = average_precision_score(y_val_det, y_val_proba_det)
 
-            if val_aupr > best_aupr:
-                best_aupr = val_aupr
-                best_state = copy.deepcopy(encoder.state_dict())
-                counter = 0
-            else:
-                counter += 1
-                if counter >= patience:
-                    print(f"    Early stopping at epoch {epoch+1}")
-                    break
+                print(f"    Epoch {epoch+1:3d} | Temp: {temperature:.3f} | "
+                      f"Val AUC: {val_auc:.4f} | Val AUPR: {val_aupr_det:.4f}")
+
+                if val_aupr_det > best_val_aupr:
+                    best_val_aupr = val_aupr_det
+                    best_state = copy.deepcopy(policy_net.state_dict())
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        print(f"    Early stopping at epoch {epoch+1}")
+                        break
 
     if best_state is not None:
-        encoder.load_state_dict(best_state)
+        policy_net.load_state_dict(best_state)
 
-    print(f"  [Training] Completed. Best Val AUPR: {best_aupr:.4f}")
-    return encoder
-
+    print(f"  [RL Training] Completed. Best Val AUPR: {best_val_aupr:.4f}")
+    return policy_net
 
 # ==============================================================================
-# Main
+# 6. Main
 # ==============================================================================
 
 def main():
     print("="*80)
-    print("Tab_Xv6: Extended Handcrafted Features + Learned Latent")
+    print("Tab_Xv6: Extended Handcrafted + RL-Optimized Learned Features")
     print("="*80)
-    print("\nKEY INSIGHT:")
-    print("  Tab_RLv4 extracts 7 stats per temporal feature (not just 'last')!")
-    print("  We do the SAME + add learned latent on top")
+    print("\nProven Strategy:")
+    print("  1. Extended handcrafted (7 stats/feature) → +1.63% AUPR ✓")
+    print("  2. RL-optimized learned latent on top → +1.5% more AUPR (expected)")
+    print("  3. No pretraining needed (handcrafted base already strong)")
     print("="*80)
 
     patients = load_and_prepare_patients()
     temporal_feats = get_all_temporal_features(patients)
 
-    # Static encoder
-    static_encoder = SimpleStaticEncoder(FIXED_FEATURES)
-    static_encoder.fit(patients.patientList)
+    encoder = SimpleStaticEncoder(FIXED_FEATURES)
+    encoder.fit(patients.patientList)
 
     print(f"\nStatic features: {len(FIXED_FEATURES)}")
     print(f"Temporal features: {len(temporal_feats)}")
     print(f"Extended handcrafted: {len(temporal_feats)} x 7 = {len(temporal_feats)*7}")
     print(f"Learned latent: 32")
-    print(f"Total: {len(FIXED_FEATURES)} + {len(temporal_feats)*7} + 32 = {len(FIXED_FEATURES) + len(temporal_feats)*7 + 32}")
+    print(f"Total: {len(FIXED_FEATURES) + len(temporal_feats)*7 + 32}")
 
     metrics_xv6 = {k: [] for k in ['auc', 'auc_pr']}
     metrics_baseline = {k: [] for k in ['auc', 'auc_pr']}
@@ -542,43 +509,49 @@ def main():
         val_p = val_p_obj.patientList
         test_p_list = test_p.patientList
 
-        # Create datasets
-        train_ds = ExtendedDataset(train_p, temporal_feats, static_encoder)
+        train_ds = HybridDataset(train_p, temporal_feats, encoder)
         stats = train_ds.get_normalization_stats()
-        val_ds = ExtendedDataset(val_p, temporal_feats, static_encoder, stats)
-        test_ds = ExtendedDataset(test_p_list, temporal_feats, static_encoder, stats)
+        val_ds = HybridDataset(val_p, temporal_feats, encoder, stats)
+        test_ds = HybridDataset(test_p_list, temporal_feats, encoder, stats)
 
-        train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=extended_collate_fn)
-        val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=extended_collate_fn)
-        test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=extended_collate_fn)
+        train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=hybrid_collate_fn)
+        val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
+        test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=hybrid_collate_fn)
 
-        # Create encoder
+        # Policy network
         latent_dim = 32
-        encoder = TemporalFeatureEncoder(
-            num_features=len(temporal_feats),
-            hidden_dim=64,
+        policy_net = RNNPolicyNetwork(
+            input_dim=len(temporal_feats),
+            hidden_dim=24,
             latent_dim=latent_dim,
-            num_heads=4
+            time_dim=32
         ).to(DEVICE)
 
         tabpfn_params = {'device': 'cuda' if torch.cuda.is_available() else 'cpu'}
 
-        # Train
-        encoder = train_encoder(
-            encoder, train_loader, val_loader,
-            num_static_feats=len(FIXED_FEATURES),
-            num_temporal_feats=len(temporal_feats),
-            latent_dim=latent_dim,
-            epochs=80
+        # RL training (no pretraining)
+        policy_net = train_policy_rl(
+            policy_net,
+            train_loader,
+            val_loader,
+            tabpfn_params,
+            epochs=80,
+            update_tabpfn_every=5
         )
 
-        # Evaluate
+        # Test evaluation
         print("\n  [Test Evaluation]")
-        X_train_final, y_train_final = extract_all_features(encoder, train_loader)
-        X_test_final, y_test_final = extract_all_features(encoder, test_loader)
+        policy_net.eval()
 
-        print(f"  Train shape: {X_train_final.shape}")
-        print(f"  Test shape: {X_test_final.shape}")
+        with torch.no_grad():
+            X_train_final, y_train_final, _ = extract_extended_features_and_logprobs(
+                policy_net, train_loader, deterministic=True
+            )
+            X_test_final, y_test_final, _ = extract_extended_features_and_logprobs(
+                policy_net, test_loader, deterministic=True
+            )
+
+        print(f"  Test features shape: {X_test_final.shape}")
 
         final_tabpfn = TabPFNClassifier(**tabpfn_params)
         final_tabpfn.fit(X_train_final, y_train_final)
@@ -642,7 +615,7 @@ def main():
         ax.set_ylabel("True Positive Rate")
         ax.legend(loc="lower right")
 
-    ax1.set_title("Tab_Xv6: Extended Features + Learned Latent")
+    ax1.set_title("Tab_Xv6: Extended Features + RL Learned")
     ax2.set_title("Baseline (Last Only)")
     plt.tight_layout()
     plt.savefig("result/tab_xv6_vs_baseline.png", dpi=300)
@@ -663,10 +636,10 @@ def main():
     print_stat("AUC-PR", metrics_xv6['auc_pr'], metrics_baseline['auc_pr'])
 
     print("\n" + "="*80)
-    print("Tab_Xv6 = Tab_RLv4 Strategy WITHOUT RL:")
-    print("✓ Extended handcrafted: 7 stats per temporal feature")
-    print("✓ Learned latent: 32-dim from Bi-GRU + Attention")
-    print("✓ Simple supervised training (no RL complexity)")
+    print("Tab_Xv6 = Best of Both Worlds:")
+    print("✓ Extended handcrafted features (proven: +1.63% AUPR)")
+    print("✓ RL-optimized learned features (optimized for TabPFN)")
+    print("✓ Simpler than Tab_RLv4 (no pretraining)")
     print("="*80)
 
 if __name__ == "__main__":
