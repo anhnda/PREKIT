@@ -2,7 +2,7 @@ import pandas as pd
 
 from constants import MIMIC_PATH, TARGET_PATIENT_FILE, TEMP_PATH
 
-from notebook_wrapper import NotebookWrapper
+#from notebook_wrapper import NotebookWrapper
 
 
 def getNotebookOutput():
