@@ -3,11 +3,14 @@ from pandasql import PandaSQL
 import sys
 from secret import MIMIC_PATH_STR, POSTGRESQL_CONNECTION_STRING
 
-
+import os
+CUR_DIR = os.path.dirname(os.path.abspath(__file__))
 MIMIC_PATH = Path(MIMIC_PATH_STR)
 PT = "/Users/anhnd/CodingSpace/Python/PREDKIT"
 if sys.platform != "darwin":  
     PT = "/home/anhnda/PREKIT"
+if CUR_DIR.__contains__("prome"):
+    PT = "/home/DATA/prometheus/anh/PREKIT"
 # temporary path
 TEMP_PATH = Path( "%s/tmp"  %PT)
 TEMP_PATH.mkdir(parents=True, exist_ok=True)
