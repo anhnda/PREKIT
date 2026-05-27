@@ -14,7 +14,7 @@ from sklearn.model_selection import StratifiedKFold
 from sortedcontainers import SortedDict
 from constants import TEMP_PATH
 from mimic_sql import chemistry, complete_blood_count
-from notebook_wrappers.target_patients_wrapper import getTargetPatientIcu
+#from notebook_wrappers.target_patients_wrapper import getTargetPatientIcu
 import akd_positive
 from utils.reduce_mesurements import reduceByHadmId
 from variables.charateristics_diabetes import (
